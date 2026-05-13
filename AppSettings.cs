@@ -1,0 +1,55 @@
+using System.Text.Json;
+
+namespace Nimono;
+
+internal sealed class AppSettings
+{
+    public List<string> SearchFolders { get; set; } = new();
+}
+
+internal static class SettingsStorage
+{
+    private static readonly string SettingsFolder =
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Nimono");
+
+    private static readonly string SettingsPath = Path.Combine(SettingsFolder, "settings.json");
+
+    public static AppSettings Load()
+    {
+        try
+        {
+            if (!File.Exists(SettingsPath))
+                return new AppSettings();
+
+            var json = File.ReadAllText(SettingsPath);
+            var options = new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+            };
+            var settings = JsonSerializer.Deserialize<AppSettings>(json, options);
+            return settings ?? new AppSettings();
+        }
+        catch
+        {
+            return new AppSettings();
+        }
+    }
+
+    public static void Save(AppSettings settings)
+    {
+        try
+        {
+            Directory.CreateDirectory(SettingsFolder);
+            var options = new JsonSerializerOptions
+            {
+                WriteIndented = true,
+            };
+            var json = JsonSerializer.Serialize(settings, options);
+            File.WriteAllText(SettingsPath, json);
+        }
+        catch
+        {
+            // 保存に失敗しても UI には影響を与えない
+        }
+    }
+}

@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Nimono.csproj" />
+  <Project Path="Nimono.Tests/Nimono.Tests.csproj" />
+</Solution>
