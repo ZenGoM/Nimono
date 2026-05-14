@@ -5,6 +5,9 @@ namespace Nimono;
 internal sealed class AppSettings
 {
     public List<string> SearchFolders { get; set; } = new();
+    public int SimilarityThreshold { get; set; } = 85;
+    public int WindowWidth { get; set; } = 1100;
+    public int WindowHeight { get; set; } = 750;
 }
 
 internal static class SettingsStorage

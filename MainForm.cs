@@ -8,6 +8,8 @@ public class MainForm : Form
 
     private readonly List<string> _folders = new();
     private readonly List<Bitmap> _allocatedThumbnails = new();
+    private readonly List<ImageGroup> _groups = new();
+    private readonly Dictionary<int, FlowLayoutPanel> _groupFlows = new();
     private CancellationTokenSource? _cts;
     private AppSettings _settings = null!;
 
@@ -25,6 +27,10 @@ public class MainForm : Form
         InitializeComponents();
         _settings = SettingsStorage.Load();
         _folders.AddRange(_settings.SearchFolders.Where(Directory.Exists));
+        _thresholdInput.Value = Math.Clamp(_settings.SimilarityThreshold, 50, 100);
+        _thresholdInput.ValueChanged += (_, _) => SaveSettings();
+        Size = new Size(_settings.WindowWidth, _settings.WindowHeight);
+        ResizeEnd += (_, _) => SaveSettings();
         if (_folders.Count > 0)
         {
             _scanButton.Enabled = true;
@@ -170,6 +176,9 @@ public class MainForm : Form
     private void SaveSettings()
     {
         _settings.SearchFolders = _folders.ToList();
+        _settings.SimilarityThreshold = (int)_thresholdInput.Value;
+        _settings.WindowWidth = Width;
+        _settings.WindowHeight = Height;
         SettingsStorage.Save(_settings);
     }
 
@@ -273,11 +282,14 @@ public class MainForm : Form
         foreach (var bmp in _allocatedThumbnails)
             bmp.Dispose();
         _allocatedThumbnails.Clear();
+        _groups.Clear();
+        _groupFlows.Clear();
         _resultsPanel.ResumeLayout();
     }
 
     private void RenderGroups(IReadOnlyList<ImageGroup> groups)
     {
+        _groups.AddRange(groups);
         _resultsPanel.SuspendLayout();
         int top = 0;
         foreach (var group in groups)
@@ -323,9 +335,10 @@ public class MainForm : Form
             BackColor = Color.White,
         };
 
+        _groupFlows[group.Id] = flow;
         foreach (var path in group.Paths)
         {
-            var thumb = CreateThumbnail(path);
+            var thumb = CreateThumbnail(path, group.Similarities[path], group.Id);
             flow.Controls.Add(thumb);
         }
 
@@ -342,14 +355,46 @@ public class MainForm : Form
         return container;
     }
 
-    private Control CreateThumbnail(string path)
+    private Control CreateThumbnail(string path, double similarity, int groupId)
     {
+        var (bmp, originalSize) = TryLoadThumbnail(path);
+
+        var fi = new FileInfo(path);
+        string formatText = fi.Extension.TrimStart('.').ToUpperInvariant();
+        string sizeText = FormatFileSize(fi.Length);
+        string resText = originalSize != Size.Empty
+            ? $"{originalSize.Width}×{originalSize.Height}"
+            : "—";
+        string dateText = fi.LastWriteTime.ToString("yyyy/MM/dd");
+        string relativePath = GetRelativePath(path);
+
+        const int SimLabelHeight = 16;
+        const int PicTop = 4 + SimLabelHeight;
+
+        var infoFont = new Font("Segoe UI", 7.5f);
+        string infoText = $"{formatText} · {sizeText}\n{resText}\n{dateText}\n{relativePath}";
+        int infoHeight = TextRenderer.MeasureText(
+            infoText, infoFont, new Size(ThumbnailSize, int.MaxValue),
+            TextFormatFlags.WordBreak).Height + 2;
+
         var wrap = new Panel
         {
             Width = ThumbnailSize + 8,
-            Height = ThumbnailSize + 30,
+            Height = PicTop + ThumbnailSize + 24 + infoHeight + 6,
             Margin = new Padding(4),
             BackColor = Color.White,
+        };
+
+        var simLabel = new Label
+        {
+            Text = $"類似度: {similarity:P0}",
+            Left = 4,
+            Top = 4,
+            Width = ThumbnailSize,
+            Height = SimLabelHeight,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
+            ForeColor = Color.FromArgb(60, 90, 140),
         };
 
         var pic = new PictureBox
@@ -357,14 +402,13 @@ public class MainForm : Form
             Width = ThumbnailSize,
             Height = ThumbnailSize,
             Left = 4,
-            Top = 4,
+            Top = PicTop,
             SizeMode = PictureBoxSizeMode.Zoom,
             BackColor = Color.FromArgb(230, 230, 235),
             BorderStyle = BorderStyle.FixedSingle,
             Cursor = Cursors.Hand,
         };
 
-        var bmp = TryLoadThumbnail(path);
         if (bmp != null)
         {
             pic.Image = bmp;
@@ -375,7 +419,7 @@ public class MainForm : Form
         {
             Text = Path.GetFileName(path),
             Left = 4,
-            Top = ThumbnailSize + 6,
+            Top = PicTop + ThumbnailSize + 6,
             Width = ThumbnailSize,
             Height = 18,
             AutoEllipsis = true,
@@ -383,11 +427,24 @@ public class MainForm : Form
             Font = new Font("Segoe UI", 8.25f),
         };
 
+        var infoLabel = new Label
+        {
+            Text = infoText,
+            Left = 4,
+            Top = PicTop + ThumbnailSize + 24,
+            Width = ThumbnailSize,
+            Height = infoHeight,
+            TextAlign = ContentAlignment.TopLeft,
+            Font = infoFont,
+            ForeColor = Color.FromArgb(100, 100, 100),
+        };
+
         _toolTip.SetToolTip(pic, path);
         _toolTip.SetToolTip(nameLabel, path);
 
-        pic.Click += (_, _) => OpenExternal(path);
-        nameLabel.Click += (_, _) => OpenExternal(path);
+        pic.Click += (_, _) => SetGroupReference(groupId, path);
+        simLabel.Click += (_, _) => SetGroupReference(groupId, path);
+        nameLabel.Click += (_, _) => SetGroupReference(groupId, path);
 
         var menu = new ContextMenuStrip();
         menu.Items.Add("開く", null, (_, _) => OpenExternal(path));
@@ -399,17 +456,78 @@ public class MainForm : Form
         pic.ContextMenuStrip = menu;
         nameLabel.ContextMenuStrip = menu;
 
+        wrap.Controls.Add(simLabel);
         wrap.Controls.Add(pic);
         wrap.Controls.Add(nameLabel);
+        wrap.Controls.Add(infoLabel);
         return wrap;
     }
 
-    private static Bitmap? TryLoadThumbnail(string path)
+    private void SetGroupReference(int groupId, string referencePath)
+    {
+        int idx = _groups.FindIndex(g => g.Id == groupId);
+        if (idx < 0) return;
+        var newGroup = RecalculateGroup(_groups[idx], referencePath);
+        _groups[idx] = newGroup;
+        if (_groupFlows.TryGetValue(groupId, out var flow))
+            RebuildGroupFlow(flow, newGroup);
+    }
+
+    private static ImageGroup RecalculateGroup(ImageGroup group, string referencePath)
+    {
+        ulong refHash = group.Hashes[referencePath];
+        var newSimilarities = group.Hashes.ToDictionary(
+            kv => kv.Key,
+            kv => ImageHasher.Similarity(refHash, kv.Value));
+        var newPaths = newSimilarities
+            .OrderByDescending(kv => kv.Value)
+            .Select(kv => kv.Key)
+            .ToList();
+        return group with { Paths = newPaths, Similarities = newSimilarities };
+    }
+
+    private void RebuildGroupFlow(FlowLayoutPanel flow, ImageGroup group)
+    {
+        flow.SuspendLayout();
+        foreach (Control c in flow.Controls)
+        {
+            if (c is Panel wrap)
+                foreach (Control inner in wrap.Controls)
+                    if (inner is PictureBox pb && pb.Image is Bitmap bmp)
+                        _allocatedThumbnails.Remove(bmp);
+            c.Dispose();
+        }
+        flow.Controls.Clear();
+        foreach (var path in group.Paths)
+            flow.Controls.Add(CreateThumbnail(path, group.Similarities[path], group.Id));
+        flow.ResumeLayout(true);
+    }
+
+    private string GetRelativePath(string filePath)
+    {
+        foreach (var folder in _folders)
+        {
+            if (filePath.StartsWith(folder, StringComparison.OrdinalIgnoreCase))
+                return filePath.Substring(folder.Length).TrimStart(Path.DirectorySeparatorChar);
+        }
+        return filePath;
+    }
+
+    private static string FormatFileSize(long bytes) => bytes switch
+    {
+        >= 1_048_576 => $"{bytes / 1_048_576.0:F1} MB",
+        >= 1_024 => $"{bytes / 1_024.0:F0} KB",
+        _ => $"{bytes} B",
+    };
+
+    private static (Bitmap? Bmp, Size OriginalSize) TryLoadThumbnail(string path)
     {
         try
         {
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
             using var src = Image.FromStream(fs, useEmbeddedColorManagement: false, validateImageData: false);
+
+            var originalSize = new Size(src.Width, src.Height);
 
             int w = ThumbnailSize, h = ThumbnailSize;
             double ratio = (double)src.Width / src.Height;
@@ -422,11 +540,11 @@ public class MainForm : Form
             using var g = Graphics.FromImage(bmp);
             g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
             g.DrawImage(src, 0, 0, w, h);
-            return bmp;
+            return (bmp, originalSize);
         }
         catch
         {
-            return null;
+            return (null, Size.Empty);
         }
     }
 

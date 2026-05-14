@@ -4,7 +4,11 @@ namespace Nimono;
 
 internal record ImageEntry(string Path, ulong Hash);
 
-internal record ImageGroup(int Id, IReadOnlyList<string> Paths);
+internal record ImageGroup(
+    int Id,
+    IReadOnlyList<string> Paths,
+    IReadOnlyDictionary<string, double> Similarities,
+    IReadOnlyDictionary<string, ulong> Hashes);
 
 internal record GroupingProgress(string Phase, int Current, int Total);
 
@@ -128,8 +132,17 @@ internal static class ImageGrouper
         foreach (var kv in buckets.Where(b => b.Value.Count >= 2)
                                   .OrderByDescending(b => b.Value.Count))
         {
-            var paths = kv.Value.Select(i => entries[i].Path).OrderBy(p => p).ToList();
-            groups.Add(new ImageGroup(id++, paths));
+            var sortedByPath = kv.Value.OrderBy(i => entries[i].Path).ToList();
+            var hashes = sortedByPath.ToDictionary(i => entries[i].Path, i => entries[i].Hash);
+            ulong refHash = entries[sortedByPath[0]].Hash;
+            var similarities = new Dictionary<string, double>();
+            foreach (var idx in sortedByPath)
+                similarities[entries[idx].Path] = ImageHasher.Similarity(refHash, entries[idx].Hash);
+            var paths = sortedByPath
+                .OrderByDescending(i => similarities[entries[i].Path])
+                .Select(i => entries[i].Path)
+                .ToList();
+            groups.Add(new ImageGroup(id++, paths, similarities, hashes));
         }
 
         return groups;
