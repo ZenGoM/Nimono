@@ -10,6 +10,9 @@ public class MainForm : Form
     private readonly List<Bitmap> _allocatedThumbnails = new();
     private readonly List<ImageGroup> _groups = new();
     private readonly Dictionary<int, FlowLayoutPanel> _groupFlows = new();
+    private readonly Dictionary<int, Panel> _groupPanels = new();
+    private readonly Dictionary<int, int> _groupTops = new();
+    private readonly HashSet<int> _renderedGroupIds = new();
     private CancellationTokenSource? _cts;
     private AppSettings _settings = null!;
 
@@ -19,7 +22,7 @@ public class MainForm : Form
     private NumericUpDown _thresholdInput = null!;
     private Label _statusLabel = null!;
     private ProgressBar _progressBar = null!;
-    private Panel _resultsPanel = null!;
+    private VirtualScrollPanel _resultsPanel = null!;
     private ToolTip _toolTip = null!;
 
     public MainForm()
@@ -30,7 +33,7 @@ public class MainForm : Form
         _thresholdInput.Value = Math.Clamp(_settings.SimilarityThreshold, 50, 100);
         _thresholdInput.ValueChanged += (_, _) => SaveSettings();
         Size = new Size(_settings.WindowWidth, _settings.WindowHeight);
-        ResizeEnd += (_, _) => SaveSettings();
+        ResizeEnd += (_, _) => { SaveSettings(); RecalculateAllPanelPositions(); };
         if (_folders.Count > 0)
         {
             _scanButton.Enabled = true;
@@ -144,13 +147,14 @@ public class MainForm : Form
         statusPanel.Controls.Add(_statusLabel);
         statusPanel.Controls.Add(_progressBar);
 
-        _resultsPanel = new Panel
+        _resultsPanel = new VirtualScrollPanel
         {
             Dock = DockStyle.Fill,
             AutoScroll = true,
             BackColor = Color.FromArgb(245, 245, 248),
             Padding = new Padding(8),
         };
+        _resultsPanel.Scrolled += (_, _) => UpdateVisibleGroups();
 
         Controls.Add(_resultsPanel);
         Controls.Add(statusPanel);
@@ -276,38 +280,112 @@ public class MainForm : Form
     private void ClearResults()
     {
         _resultsPanel.SuspendLayout();
-        foreach (Control c in _resultsPanel.Controls)
-            c.Dispose();
         _resultsPanel.Controls.Clear();
+        foreach (var p in _groupPanels.Values)
+            p.Dispose();
         foreach (var bmp in _allocatedThumbnails)
             bmp.Dispose();
         _allocatedThumbnails.Clear();
         _groups.Clear();
         _groupFlows.Clear();
+        _groupPanels.Clear();
+        _groupTops.Clear();
+        _renderedGroupIds.Clear();
+        _resultsPanel.AutoScrollMinSize = Size.Empty;
+        _resultsPanel.AutoScrollPosition = new Point(0, 0);
         _resultsPanel.ResumeLayout();
     }
 
     private void RenderGroups(IReadOnlyList<ImageGroup> groups)
     {
         _groups.AddRange(groups);
-        _resultsPanel.SuspendLayout();
+        int panelWidth = _resultsPanel.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4;
+        if (panelWidth < 100) panelWidth = 100;
         int top = 0;
         foreach (var group in groups)
         {
             var panel = BuildGroupPanel(group);
-            panel.Left = 0;
-            panel.Width = _resultsPanel.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4;
-            panel.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-            _resultsPanel.Controls.Add(panel);
-            panel.PerformLayout();
-            int desiredHeight = panel.PreferredSize.Height;
-            panel.AutoSize = false;
-            panel.Height = desiredHeight;
-            panel.Top = top;
-            top += desiredHeight + 8;
+            panel.Width = panelWidth;
+            SetGroupPanelHeight(panel, group.Id);
+            _groupTops[group.Id] = top;
+            top += panel.Height + 8;
         }
-        _resultsPanel.ResumeLayout(true);
-        _resultsPanel.PerformLayout();
+        _resultsPanel.AutoScrollMinSize = new Size(0, top + _resultsPanel.Padding.Bottom);
+        UpdateVisibleGroups();
+    }
+
+    private void SetGroupPanelHeight(Panel panel, int groupId)
+    {
+        var flow = _groupFlows[groupId];
+        int flowWidth = Math.Max(1, panel.Width - 2); // FixedSingle border = 1px each side
+        int flowHeight = flow.GetPreferredSize(new Size(flowWidth, int.MaxValue)).Height;
+        panel.Height = 24 + flowHeight + 2;
+    }
+
+    private void RecalculateAllPanelPositions()
+    {
+        if (_groups.Count == 0) return;
+        int panelWidth = _resultsPanel.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4;
+        if (panelWidth < 100) panelWidth = 100;
+        int top = 0;
+        foreach (var g in _groups)
+        {
+            if (!_groupPanels.TryGetValue(g.Id, out var panel)) continue;
+            panel.Width = panelWidth;
+            SetGroupPanelHeight(panel, g.Id);
+            _groupTops[g.Id] = top;
+            top += panel.Height + 8;
+        }
+        _resultsPanel.AutoScrollMinSize = new Size(0, top + _resultsPanel.Padding.Bottom);
+        int scrollY = -_resultsPanel.AutoScrollPosition.Y;
+        _resultsPanel.SuspendLayout();
+        foreach (var id in _renderedGroupIds)
+        {
+            if (_groupPanels.TryGetValue(id, out var p) && _groupTops.TryGetValue(id, out int absTop))
+                p.Top = absTop - scrollY;
+        }
+        _resultsPanel.ResumeLayout(false);
+        UpdateVisibleGroups();
+    }
+
+    private void UpdateVisibleGroups()
+    {
+        if (_groups.Count == 0) return;
+        int scrollY = -_resultsPanel.AutoScrollPosition.Y;
+        int viewportH = _resultsPanel.ClientSize.Height;
+        int buffer = Math.Max(viewportH, 300);
+        int panelWidth = _resultsPanel.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4;
+        if (panelWidth < 100) panelWidth = 100;
+        var toAdd = new List<Panel>();
+        var toRemove = new List<Panel>();
+        foreach (var g in _groups)
+        {
+            if (!_groupTops.TryGetValue(g.Id, out int absTop)) continue;
+            if (!_groupPanels.TryGetValue(g.Id, out var panel)) continue;
+            int absBottom = absTop + panel.Height;
+            bool visible = absBottom > scrollY - buffer && absTop < scrollY + viewportH + buffer;
+            bool rendered = _renderedGroupIds.Contains(g.Id);
+            if (visible && !rendered)
+            {
+                panel.Left = 0;
+                panel.Width = panelWidth;
+                panel.Top = absTop - scrollY;
+                toAdd.Add(panel);
+                _renderedGroupIds.Add(g.Id);
+            }
+            else if (!visible && rendered)
+            {
+                toRemove.Add(panel);
+                _renderedGroupIds.Remove(g.Id);
+            }
+        }
+        if (toAdd.Count == 0 && toRemove.Count == 0) return;
+        _resultsPanel.SuspendLayout();
+        foreach (var p in toRemove)
+            _resultsPanel.Controls.Remove(p);
+        foreach (var p in toAdd)
+            _resultsPanel.Controls.Add(p);
+        _resultsPanel.ResumeLayout(false);
     }
 
     private Panel BuildGroupPanel(ImageGroup group)
@@ -326,7 +404,7 @@ public class MainForm : Form
 
         var flow = new FlowLayoutPanel
         {
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.Top,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             FlowDirection = FlowDirection.LeftToRight,
@@ -344,14 +422,13 @@ public class MainForm : Form
 
         var container = new Panel
         {
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             BorderStyle = BorderStyle.FixedSingle,
             BackColor = Color.White,
             Padding = new Padding(0),
         };
         container.Controls.Add(flow);
         container.Controls.Add(header);
+        _groupPanels[group.Id] = container;
         return container;
     }
 
@@ -488,6 +565,7 @@ public class MainForm : Form
 
     private void RebuildGroupFlow(FlowLayoutPanel flow, ImageGroup group)
     {
+        var savedScroll = _resultsPanel.AutoScrollPosition;
         flow.SuspendLayout();
         foreach (Control c in flow.Controls)
         {
@@ -501,6 +579,37 @@ public class MainForm : Form
         foreach (var path in group.Paths)
             flow.Controls.Add(CreateThumbnail(path, group.Similarities[path], group.Id));
         flow.ResumeLayout(true);
+
+        if (_groupPanels.TryGetValue(group.Id, out var panel))
+            SetGroupPanelHeight(panel, group.Id);
+
+        // Recompute tops from this group onwards
+        bool found = false;
+        int top = 0;
+        foreach (var g in _groups)
+        {
+            if (!found)
+            {
+                if (g.Id != group.Id) continue;
+                found = true;
+                top = _groupTops.TryGetValue(g.Id, out var t) ? t : 0;
+            }
+            _groupTops[g.Id] = top;
+            if (_groupPanels.TryGetValue(g.Id, out var p)) top += p.Height + 8;
+        }
+        _resultsPanel.AutoScrollMinSize = new Size(0, top + _resultsPanel.Padding.Bottom);
+
+        _resultsPanel.AutoScrollPosition = new Point(-savedScroll.X, -savedScroll.Y);
+
+        int scrollY = -_resultsPanel.AutoScrollPosition.Y;
+        _resultsPanel.SuspendLayout();
+        foreach (var id in _renderedGroupIds)
+        {
+            if (_groupPanels.TryGetValue(id, out var rp) && _groupTops.TryGetValue(id, out int absTop))
+                rp.Top = absTop - scrollY;
+        }
+        _resultsPanel.ResumeLayout(false);
+        UpdateVisibleGroups();
     }
 
     private string GetRelativePath(string filePath)
@@ -574,5 +683,20 @@ public class MainForm : Form
         _cts?.Cancel();
         ClearResults();
         base.OnFormClosing(e);
+    }
+
+    private sealed class VirtualScrollPanel : Panel
+    {
+        public event EventHandler? Scrolled;
+
+        protected override void WndProc(ref Message m)
+        {
+            base.WndProc(ref m);
+            const int WM_VSCROLL = 0x115;
+            const int WM_MOUSEWHEEL = 0x20A;
+            const int WM_KEYDOWN = 0x100;
+            if (m.Msg == WM_VSCROLL || m.Msg == WM_MOUSEWHEEL || m.Msg == WM_KEYDOWN)
+                Scrolled?.Invoke(this, EventArgs.Empty);
+        }
     }
 }
