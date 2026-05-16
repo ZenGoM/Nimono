@@ -9,9 +9,9 @@ internal sealed class CompareForm : Form
     private readonly Dictionary<string, string> _sizeCache = new();
 
     private SplitContainer _mainSplitter = null!;
-    private PictureBox _leftPic = null!;
+    private ZoomableImagePanel _leftView = null!;
     private Label _leftInfo = null!;
-    private PictureBox _rightPic = null!;
+    private ZoomableImagePanel _rightView = null!;
     private Label _rightInfo = null!;
     private ListView _fileList = null!;
     private ToolTip _toolTip = null!;
@@ -19,6 +19,7 @@ internal sealed class CompareForm : Form
     private Bitmap? _leftBitmap;
     private Bitmap? _rightBitmap;
     private bool _suppressEvent;
+    private bool _syncingView;
 
     public CompareForm(ImageGroup group, AppSettings settings)
     {
@@ -50,13 +51,12 @@ internal sealed class CompareForm : Form
             BackColor = Color.FromArgb(160, 160, 170),
         };
 
-        // ── 上部: 左右画像パネル ──
         var imageTable = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 2,
             RowCount = 1,
-            BackColor = Color.FromArgb(160, 160, 170), // セパレーター色
+            BackColor = Color.FromArgb(160, 160, 170),
             Padding = new Padding(0),
             Margin = new Padding(0),
         };
@@ -64,8 +64,24 @@ internal sealed class CompareForm : Form
         imageTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         imageTable.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        (_leftPic, _leftInfo) = BuildSide(imageTable, 0);
-        (_rightPic, _rightInfo) = BuildSide(imageTable, 1);
+        (_leftView, _leftInfo) = BuildSide(imageTable, 0);
+        (_rightView, _rightInfo) = BuildSide(imageTable, 1);
+
+        // 左右の拡大・位置を同期
+        _leftView.ViewChanged += (_, vs) =>
+        {
+            if (_syncingView) return;
+            _syncingView = true;
+            _rightView.SetView(vs.Zoom, vs.Pan);
+            _syncingView = false;
+        };
+        _rightView.ViewChanged += (_, vs) =>
+        {
+            if (_syncingView) return;
+            _syncingView = true;
+            _leftView.SetView(vs.Zoom, vs.Pan);
+            _syncingView = false;
+        };
 
         _mainSplitter.Panel1.Controls.Add(imageTable);
 
@@ -129,7 +145,7 @@ internal sealed class CompareForm : Form
         _mainSplitter.SplitterMoved += (_, _) => PersistSettings();
     }
 
-    private (PictureBox pic, Label info) BuildSide(TableLayoutPanel table, int column)
+    private (ZoomableImagePanel view, Label info) BuildSide(TableLayoutPanel table, int column)
     {
         bool isLeft = column == 0;
         var outer = new Panel
@@ -150,10 +166,9 @@ internal sealed class CompareForm : Form
             ForeColor = Color.White,
         };
 
-        var pic = new PictureBox
+        var view = new ZoomableImagePanel
         {
             Dock = DockStyle.Fill,
-            SizeMode = PictureBoxSizeMode.Zoom,
             BackColor = Color.FromArgb(210, 210, 218),
         };
 
@@ -169,20 +184,19 @@ internal sealed class CompareForm : Form
         };
 
         var menu = new ContextMenuStrip();
-        menu.Items.Add("開く", null, (_, _) => OpenExternal(pic.Tag as string));
-        menu.Items.Add("フォルダーを開く", null, (_, _) => OpenFolder(pic.Tag as string));
+        menu.Items.Add("開く", null, (_, _) => OpenExternal(view.Tag as string));
+        menu.Items.Add("フォルダーを開く", null, (_, _) => OpenFolder(view.Tag as string));
         menu.Items.Add("パスをコピー", null, (_, _) =>
         {
-            if (pic.Tag is string p) try { Clipboard.SetText(p); } catch { }
+            if (view.Tag is string p) try { Clipboard.SetText(p); } catch { }
         });
-        pic.ContextMenuStrip = menu;
-        pic.DoubleClick += (_, _) => OpenExternal(pic.Tag as string);
+        view.ContextMenuStrip = menu;
 
-        outer.Controls.Add(pic);
+        outer.Controls.Add(view);
         outer.Controls.Add(info);
         outer.Controls.Add(roleLabel);
         table.Controls.Add(outer, column, 0);
-        return (pic, info);
+        return (view, info);
     }
 
     private void PopulateList()
@@ -219,9 +233,9 @@ internal sealed class CompareForm : Form
         var path = _group.Paths[0];
         _leftBitmap?.Dispose();
         _leftBitmap = LoadBitmap(path);
-        _leftPic.Image = _leftBitmap;
-        _leftPic.Tag = path;
-        _toolTip.SetToolTip(_leftPic, path);
+        _leftView.Image = _leftBitmap;
+        _leftView.Tag = path;
+        _toolTip.SetToolTip(_leftView, path);
         _leftInfo.Text = BuildInfoText(path, 0);
     }
 
@@ -236,9 +250,9 @@ internal sealed class CompareForm : Form
         var path = _group.Paths[index];
         _rightBitmap?.Dispose();
         _rightBitmap = LoadBitmap(path);
-        _rightPic.Image = _rightBitmap;
-        _rightPic.Tag = path;
-        _toolTip.SetToolTip(_rightPic, path);
+        _rightView.Image = _rightBitmap;
+        _rightView.Tag = path;
+        _toolTip.SetToolTip(_rightView, path);
         _rightInfo.Text = BuildInfoText(path, index);
     }
 
@@ -322,4 +336,154 @@ internal sealed class CompareForm : Form
         _rightBitmap?.Dispose();
         base.OnFormClosing(e);
     }
+
+    // ──────────────────────────────────────────────────────────────
+    // カスタム画像パネル（ズーム・パン対応）
+    // ──────────────────────────────────────────────────────────────
+
+    private sealed class ZoomableImagePanel : Panel
+    {
+        private Bitmap? _image;
+        private float _zoom = 1f;
+        private PointF _pan;
+        private Point _dragStart;
+        private PointF _panStart;
+        private bool _dragging;
+
+        public event EventHandler<ViewState>? ViewChanged;
+
+        [System.ComponentModel.DesignerSerializationVisibility(
+            System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+        public Bitmap? Image
+        {
+            get => _image;
+            set { _image = value; Invalidate(); }
+        }
+
+        public ZoomableImagePanel()
+        {
+            SetStyle(
+                ControlStyles.OptimizedDoubleBuffer |
+                ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.UserPaint |
+                ControlStyles.Selectable,
+                true);
+            UpdateStyles();
+            TabStop = false;
+            Cursor = Cursors.Hand;
+        }
+
+        // 外部からビューを設定（同期用。ViewChanged は発火しない）
+        public void SetView(float zoom, PointF pan)
+        {
+            _zoom = zoom;
+            _pan = pan;
+            Invalidate();
+        }
+
+        public void ResetView()
+        {
+            _dragging = false;
+            Cursor = Cursors.Hand;
+            _zoom = 1f;
+            _pan = PointF.Empty;
+            Invalidate();
+            ViewChanged?.Invoke(this, new ViewState(_zoom, _pan));
+        }
+
+        // 画像をパネルに収める矩形（ズーム・パン適用済み）
+        private RectangleF ComputeDrawRect()
+        {
+            if (_image == null || Width <= 0 || Height <= 0) return RectangleF.Empty;
+            float imgAspect = (float)_image.Width / _image.Height;
+            float panelAspect = (float)Width / Height;
+            float fitW = imgAspect > panelAspect ? Width : Height * imgAspect;
+            float fitH = imgAspect > panelAspect ? Width / imgAspect : Height;
+            float drawW = fitW * _zoom;
+            float drawH = fitH * _zoom;
+            return new RectangleF(
+                (Width - drawW) / 2f + _pan.X,
+                (Height - drawH) / 2f + _pan.Y,
+                drawW, drawH);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            if (_image == null) return;
+            var rect = ComputeDrawRect();
+            if (rect.Width <= 0 || rect.Height <= 0) return;
+            e.Graphics.InterpolationMode =
+                System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+            e.Graphics.PixelOffsetMode =
+                System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+            e.Graphics.DrawImage(_image, rect);
+        }
+
+        // マウスホイール: カーソル位置を中心にズーム
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            base.OnMouseWheel(e);
+            float ratio = e.Delta > 0 ? 1.25f : 1f / 1.25f;
+            float newZoom = Math.Clamp(_zoom * ratio, 0.05f, 50f);
+            ratio = newZoom / _zoom; // クランプ後の実際の比率
+            // カーソル位置を固定したままパンを調整
+            _pan = new PointF(
+                ratio * _pan.X + (1f - ratio) * (e.X - Width / 2f),
+                ratio * _pan.Y + (1f - ratio) * (e.Y - Height / 2f));
+            _zoom = newZoom;
+            Invalidate();
+            ViewChanged?.Invoke(this, new ViewState(_zoom, _pan));
+        }
+
+        // 左ドラッグ: パン
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button == MouseButtons.Left)
+            {
+                _dragging = true;
+                _dragStart = e.Location;
+                _panStart = _pan;
+                Cursor = Cursors.SizeAll;
+            }
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            if (!_dragging) return;
+            _pan = new PointF(
+                _panStart.X + (e.X - _dragStart.X),
+                _panStart.Y + (e.Y - _dragStart.Y));
+            Invalidate();
+            ViewChanged?.Invoke(this, new ViewState(_zoom, _pan));
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (e.Button == MouseButtons.Left)
+            {
+                _dragging = false;
+                Cursor = Cursors.Hand;
+            }
+        }
+
+        // マウスカーソルが入ったらフォーカスを取得（ホイールイベント受信のため）
+        protected override void OnMouseEnter(EventArgs e)
+        {
+            base.OnMouseEnter(e);
+            Focus();
+        }
+
+        // ダブルクリックでビューをリセット
+        protected override void OnDoubleClick(EventArgs e)
+        {
+            base.OnDoubleClick(e);
+            ResetView();
+        }
+    }
+
+    private readonly record struct ViewState(float Zoom, PointF Pan);
 }
