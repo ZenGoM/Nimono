@@ -48,6 +48,9 @@ public class MainForm : Form
         MinimumSize = new Size(700, 500);
         Font = new Font("Segoe UI", 9.5f);
         StartPosition = FormStartPosition.CenterScreen;
+        var exeIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+        if (exeIcon is not null)
+            Icon = exeIcon;
 
         _toolTip = new ToolTip { AutoPopDelay = 10000, InitialDelay = 400 };
 
@@ -423,6 +426,7 @@ public class MainForm : Form
             var current = _groups.FirstOrDefault(g => g.Id == group.Id) ?? group;
             using var f = new CompareForm(current, _settings);
             f.ShowDialog(this);
+            SyncGroupFromCompareForm(f, group.Id);
         };
         header.Controls.Add(headerLabel);
         header.Controls.Add(compareButton);
@@ -460,6 +464,18 @@ public class MainForm : Form
     private Control CreateThumbnail(string path, double similarity, int groupId)
     {
         var (bmp, originalSize) = TryLoadThumbnail(path);
+
+        // 保存済みの回転を適用
+        if (bmp != null && _settings.ThumbnailRotations.TryGetValue(path, out int savedRot) && savedRot > 0)
+        {
+            var rotType = savedRot switch
+            {
+                1 => RotateFlipType.Rotate90FlipNone,
+                2 => RotateFlipType.Rotate180FlipNone,
+                _ => RotateFlipType.Rotate270FlipNone,
+            };
+            bmp.RotateFlip(rotType);
+        }
 
         var fi = new FileInfo(path);
         string formatText = fi.Extension.TrimStart('.').ToUpperInvariant();
@@ -550,6 +566,24 @@ public class MainForm : Form
 
         var menu = new ContextMenuStrip();
         menu.Items.Add("開く", null, (_, _) => OpenExternal(path));
+        menu.Items.Add("回転", null, (_, _) =>
+        {
+            if (pic.Image is not Bitmap bmpCurrent) return;
+            var rotated = (Bitmap)bmpCurrent.Clone();
+            rotated.RotateFlip(RotateFlipType.Rotate90FlipNone);
+            _allocatedThumbnails.Remove(bmpCurrent);
+            bmpCurrent.Dispose();
+            pic.Image = rotated;
+            _allocatedThumbnails.Add(rotated);
+
+            _settings.ThumbnailRotations.TryGetValue(path, out int prevRot);
+            int newRot = (prevRot + 1) % 4;
+            if (newRot == 0)
+                _settings.ThumbnailRotations.Remove(path);
+            else
+                _settings.ThumbnailRotations[path] = newRot;
+            SaveSettings();
+        });
         menu.Items.Add("フォルダーを開く", null, (_, _) => OpenFolder(path));
         menu.Items.Add("パスをコピー", null, (_, _) =>
         {
@@ -581,11 +615,105 @@ public class MainForm : Form
         var newSimilarities = group.Hashes.ToDictionary(
             kv => kv.Key,
             kv => ImageHasher.Similarity(refHash, kv.Value));
+        // referencePath を必ず先頭に置く（同一 pHash の画像と並んだ時の不安定ソートを防ぐ）
         var newPaths = newSimilarities
+            .Where(kv => kv.Key != referencePath)
             .OrderByDescending(kv => kv.Value)
             .Select(kv => kv.Key)
+            .Prepend(referencePath)
             .ToList();
         return group with { Paths = newPaths, Similarities = newSimilarities };
+    }
+
+    // 比較画面の結果（基準変更・ファイル削除）を MainForm に反映する
+    private void SyncGroupFromCompareForm(CompareForm f, int originalGroupId)
+    {
+        var updated = f.CurrentGroup;
+        int groupIdx = _groups.FindIndex(g => g.Id == originalGroupId);
+        if (groupIdx < 0) return;
+
+        var original = _groups[groupIdx];
+        if (updated.Paths.SequenceEqual(original.Paths) && f.DeletedPaths.Count == 0) return;
+
+        if (updated.Paths.Count < 2)
+        {
+            // グループ消滅：パネルだけ除去してトップ座標を再計算
+            RemoveGroupAt(groupIdx);
+        }
+        else
+        {
+            // 基準変更 or ファイル削除（グループ存続）→ RebuildGroupFlow で当該グループのみ差し替え
+            _groups[groupIdx] = updated;
+            if (_groupFlows.TryGetValue(updated.Id, out var flow))
+                RebuildGroupFlow(flow, updated);
+            int dupes = _groups.Sum(g => g.Paths.Count);
+            _statusLabel.Text = $"{_groups.Count:N0} グループ / {dupes:N0} 枚";
+        }
+    }
+
+    private void RemoveGroupAt(int groupIdx)
+    {
+        int savedScrollY = -_resultsPanel.AutoScrollPosition.Y;
+        var groupId = _groups[groupIdx].Id;
+        _groups.RemoveAt(groupIdx);
+
+        // ビットマップを解放してからパネルを破棄
+        if (_groupFlows.TryGetValue(groupId, out var flow))
+            foreach (Control c in flow.Controls)
+                if (c is Panel wrap)
+                    foreach (Control inner in wrap.Controls)
+                        if (inner is PictureBox pb && pb.Image is Bitmap bmp)
+                        {
+                            _allocatedThumbnails.Remove(bmp);
+                            bmp.Dispose();
+                        }
+
+        if (_groupPanels.TryGetValue(groupId, out var panel))
+        {
+            _resultsPanel.Controls.Remove(panel);
+            panel.Dispose();
+            _renderedGroupIds.Remove(groupId);
+        }
+        _groupPanels.Remove(groupId);
+        _groupFlows.Remove(groupId);
+        _groupTops.Remove(groupId);
+
+        // 残グループのトップ座標を先頭から再計算
+        int top = 0;
+        foreach (var g in _groups)
+        {
+            _groupTops[g.Id] = top;
+            if (_groupPanels.TryGetValue(g.Id, out var p)) top += p.Height + 8;
+        }
+        int totalH = top + _resultsPanel.Padding.Bottom;
+        _resultsPanel.AutoScrollMinSize = new Size(0, totalH);
+
+        int maxScroll = Math.Max(0, totalH - _resultsPanel.ClientSize.Height);
+        int newScrollY = Math.Min(savedScrollY, maxScroll);
+        if (newScrollY > 0)
+            _resultsPanel.AutoScrollPosition = new Point(0, newScrollY);
+
+        // 既に表示中のパネルを新しいトップ座標に移動（UpdateVisibleGroups は新規追加分しか更新しない）
+        int currentScrollY = -_resultsPanel.AutoScrollPosition.Y;
+        foreach (var g in _groups)
+        {
+            if (!_renderedGroupIds.Contains(g.Id)) continue;
+            if (!_groupTops.TryGetValue(g.Id, out int absTop)) continue;
+            if (_groupPanels.TryGetValue(g.Id, out var p))
+                p.Top = absTop - currentScrollY;
+        }
+
+        UpdateVisibleGroups();
+
+        if (_groups.Count > 0)
+        {
+            int dupes = _groups.Sum(g => g.Paths.Count);
+            _statusLabel.Text = $"{_groups.Count:N0} グループ / {dupes:N0} 枚";
+        }
+        else
+        {
+            _statusLabel.Text = "似た画像は見つかりませんでした";
+        }
     }
 
     private void RebuildGroupFlow(FlowLayoutPanel flow, ImageGroup group)

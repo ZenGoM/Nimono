@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- コンセプト: 漆器のお椀（上から見た俯瞰図）、煮物の具材が並ぶ -->
+  <defs>
+    <linearGradient id="bg_n02" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f5f0e8"/>
+      <stop offset="100%" stop-color="#ddd0b8"/>
+    </linearGradient>
+    <radialGradient id="bowlOuter" cx="50%" cy="40%" r="55%">
+      <stop offset="0%" stop-color="#c03020"/>
+      <stop offset="60%" stop-color="#901810"/>
+      <stop offset="100%" stop-color="#5a0a08"/>
+    </radialGradient>
+    <radialGradient id="soupSurface" cx="45%" cy="40%" r="55%">
+      <stop offset="0%" stop-color="#c07030"/>
+      <stop offset="100%" stop-color="#7a3a08"/>
+    </radialGradient>
+    <filter id="sh_n02" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="3" dy="6" stdDeviation="8" flood-color="#00000040"/>
+    </filter>
+  </defs>
+
+  <!-- 背景（和紙風） -->
+  <rect width="256" height="256" rx="40" fill="url(#bg_n02)"/>
+  <!-- 和柄（市松模様っぽい薄い背景） -->
+  <rect x="0" y="0" width="256" height="256" rx="40" fill="none" stroke="#c8b890" stroke-width="1" opacity="0.4"/>
+
+  <!-- お椀の外側（漆器・真っ赤） -->
+  <circle cx="128" cy="118" r="98" fill="url(#bowlOuter)" filter="url(#sh_n02)"/>
+  <!-- 漆器の光沢 -->
+  <ellipse cx="100" cy="88" rx="30" ry="12" fill="white" opacity="0.18" transform="rotate(-30, 100, 88)"/>
+
+  <!-- スープ面 -->
+  <circle cx="128" cy="118" r="80" fill="url(#soupSurface)"/>
+
+  <!-- ━━ 具材（俯瞰）━━ -->
+  <!-- 大根（だいこん）: 白い六角形っぽい輪切り -->
+  <g transform="translate(90, 100)">
+    <circle r="22" fill="#f0ebe0" stroke="#d0c8b0" stroke-width="2"/>
+    <!-- 断面の年輪 -->
+    <circle r="15" fill="none" stroke="#d8d0b8" stroke-width="1.5"/>
+    <circle r="8" fill="none" stroke="#d8d0b8" stroke-width="1.5"/>
+    <circle r="2" fill="#c8c0a8"/>
+  </g>
+
+  <!-- にんじん（にんじん）: オレンジの輪切り -->
+  <g transform="translate(155, 95)">
+    <circle r="20" fill="#e06820" stroke="#c05010" stroke-width="2"/>
+    <circle r="13" fill="none" stroke="#d07030" stroke-width="1.5"/>
+    <circle r="6" fill="none" stroke="#d07030" stroke-width="1.5"/>
+    <circle r="2" fill="#c05818"/>
+  </g>
+
+  <!-- こんにゃく: 灰色の四角 -->
+  <g transform="translate(128, 145)">
+    <rect x="-20" y="-14" width="40" height="28" rx="5" fill="#b0a0b0" stroke="#908090" stroke-width="1.5"/>
+    <line x1="-20" y1="0" x2="20" y2="0" stroke="#908090" stroke-width="1" opacity="0.5"/>
+  </g>
+
+  <!-- 里芋（さといも）: 薄茶色の楕円 -->
+  <g transform="translate(98, 148)">
+    <ellipse rx="15" ry="12" fill="#d8c8a0" stroke="#b8a880" stroke-width="1.5"/>
+  </g>
+
+  <!-- 三つ葉（みつば）: 緑の葉 -->
+  <g transform="translate(155, 140)" opacity="0.9">
+    <ellipse cx="0" cy="-10" rx="7" ry="10" fill="#3C783C" transform="rotate(-30)"/>
+    <ellipse cx="0" cy="-10" rx="7" ry="10" fill="#4a9a4a" transform="rotate(10)"/>
+    <ellipse cx="0" cy="-10" rx="7" ry="10" fill="#3C783C" transform="rotate(50)"/>
+    <line x1="0" y1="5" x2="0" y2="18" stroke="#2a5a2a" stroke-width="1.5"/>
+  </g>
+
+  <!-- お椀の縁（強調） -->
+  <circle cx="128" cy="118" r="98" fill="none" stroke="#7a1808" stroke-width="3"/>
+  <circle cx="128" cy="118" r="95" fill="none" stroke="#f0a060" stroke-width="1" opacity="0.4"/>
+
+  <!-- アプリ名 -->
+  <text x="128" y="228" text-anchor="middle" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#5a2008" letter-spacing="4">NIMONO</text>
+  <text x="128" y="248" text-anchor="middle" font-family="serif" font-size="12" fill="#8a4020" letter-spacing="3">煮物 / 似物</text>
+</svg>

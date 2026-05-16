@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- コンセプト: お重（重箱）の中に具材がぎっしり。「まとめる・グループ化」を表現 -->
+  <defs>
+    <linearGradient id="bg_n05" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f0e8d8"/>
+      <stop offset="100%" stop-color="#d8c8a8"/>
+    </linearGradient>
+    <linearGradient id="jubakoBody" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#c03020"/>
+      <stop offset="100%" stop-color="#7a1010"/>
+    </linearGradient>
+    <linearGradient id="jubakoInner" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f8f0e0"/>
+      <stop offset="100%" stop-color="#e8d8b8"/>
+    </linearGradient>
+    <linearGradient id="goldRim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e8c060"/>
+      <stop offset="100%" stop-color="#b89030"/>
+    </linearGradient>
+    <filter id="sh_n05" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="3" dy="5" stdDeviation="7" flood-color="#00000040"/>
+    </filter>
+  </defs>
+
+  <!-- 背景（和紙風） -->
+  <rect width="256" height="256" rx="40" fill="url(#bg_n05)"/>
+
+  <!-- 重箱の外箱（正面） -->
+  <rect x="32" y="52" width="192" height="162" rx="12" fill="url(#jubakoBody)" filter="url(#sh_n05)"/>
+  <!-- 外箱の光沢 -->
+  <rect x="36" y="56" width="14" height="130" rx="6" fill="white" opacity="0.12"/>
+  <!-- 金縁（上下） -->
+  <rect x="32" y="52" width="192" height="10" rx="6" fill="url(#goldRim)"/>
+  <rect x="32" y="204" width="192" height="10" rx="6" fill="url(#goldRim)"/>
+  <!-- 金縁（左右） -->
+  <rect x="32" y="52" width="10" height="162" rx="5" fill="url(#goldRim)"/>
+  <rect x="214" y="52" width="10" height="162" rx="5" fill="url(#goldRim)"/>
+
+  <!-- 重箱の内側（白） -->
+  <rect x="46" y="66" width="164" height="132" rx="6" fill="url(#jubakoInner)"/>
+
+  <!-- 仕切り線（重箱の区切り） -->
+  <line x1="128" y1="66" x2="128" y2="198" stroke="#c8b890" stroke-width="2"/>
+  <line x1="46" y1="132" x2="210" y2="132" stroke="#c8b890" stroke-width="2"/>
+
+  <!-- 左上マス：大根の輪切り -->
+  <g transform="translate(87, 99)">
+    <circle r="26" fill="#f0ebe0" stroke="#c8c0a8" stroke-width="2"/>
+    <circle r="17" fill="none" stroke="#d8d0b8" stroke-width="1.5"/>
+    <circle r="9" fill="none" stroke="#d8d0b8" stroke-width="1.5"/>
+    <circle r="3" fill="#c0b898"/>
+  </g>
+
+  <!-- 右上マス：にんじん -->
+  <g transform="translate(169, 99)">
+    <circle r="24" fill="#e06820" stroke="#c05010" stroke-width="2"/>
+    <circle r="15" fill="none" stroke="#d07030" stroke-width="1.5"/>
+    <circle r="8" fill="none" stroke="#d07030" stroke-width="1.5"/>
+    <circle r="3" fill="#b04818"/>
+  </g>
+
+  <!-- 左下マス：こんにゃく -->
+  <g transform="translate(87, 165)">
+    <rect x="-26" y="-18" width="52" height="36" rx="8" fill="#a898a8" stroke="#888090" stroke-width="2"/>
+    <line x1="-26" y1="0" x2="26" y2="0" stroke="#888090" stroke-width="1.5" opacity="0.6"/>
+    <line x1="0" y1="-18" x2="0" y2="18" stroke="#888090" stroke-width="1.5" opacity="0.6"/>
+  </g>
+
+  <!-- 右下マス：三つ葉+里芋 -->
+  <g transform="translate(169, 165)">
+    <!-- 里芋 -->
+    <ellipse cx="-8" cy="5" rx="18" ry="14" fill="#d8c8a0" stroke="#b0a880" stroke-width="1.5"/>
+    <!-- 三つ葉 -->
+    <ellipse cx="8" cy="-8" rx="7" ry="10" fill="#3C783C" transform="rotate(-20, 8, -8)"/>
+    <ellipse cx="8" cy="-8" rx="7" ry="10" fill="#4a9a4a" transform="rotate(15, 8, -8)"/>
+    <ellipse cx="8" cy="-8" rx="7" ry="10" fill="#3C783C" transform="rotate(50, 8, -8)"/>
+    <line x1="8" y1="4" x2="8" y2="18" stroke="#2a5a2a" stroke-width="2"/>
+  </g>
+
+  <!-- アプリ名 -->
+  <text x="128" y="230" text-anchor="middle" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#7a1010" letter-spacing="4">NIMONO</text>
+  <text x="128" y="250" text-anchor="middle" font-family="serif" font-size="12" fill="#9a3010" opacity="0.8" letter-spacing="2">煮物 / 似物</text>
+</svg>

@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- コンセプト: 画像グリッド＋類似ペアをハイライト・接続線 -->
+  <defs>
+    <linearGradient id="bg6" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f8f8fc"/>
+      <stop offset="100%" stop-color="#e0e4f0"/>
+    </linearGradient>
+    <filter id="sh6" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="1" dy="2" stdDeviation="3" flood-color="#00000020"/>
+    </filter>
+    <filter id="highlight" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="0" stdDeviation="6" flood-color="#3C5A8C" flood-opacity="0.5"/>
+    </filter>
+  </defs>
+
+  <!-- 背景 -->
+  <rect width="256" height="256" rx="40" fill="url(#bg6)"/>
+
+  <!-- グリッド：3×2 画像サムネイル -->
+  <!-- Row 1 -->
+  <!-- [0,0] 普通 -->
+  <rect x="20" y="28" width="60" height="50" rx="7" fill="white" filter="url(#sh6)"/>
+  <rect x="25" y="33" width="50" height="36" rx="4" fill="#e8d0c8"/>
+  <circle cx="62" cy="44" r="7" fill="#e08830"/>
+  <polygon points="27,66 42,50 57,66" fill="#805020" opacity="0.7"/>
+
+  <!-- [1,0] ハイライト（青枠） -->
+  <rect x="98" y="28" width="60" height="50" rx="7" fill="white" filter="url(#highlight)"/>
+  <rect x="103" y="33" width="50" height="36" rx="4" fill="#c8d8f0"/>
+  <circle cx="140" cy="44" r="7" fill="#f5c842"/>
+  <polygon points="105,66 120,50 135,66" fill="#3C5A8C" opacity="0.8"/>
+  <rect x="98" y="28" width="60" height="50" rx="7" fill="none" stroke="#3C5A8C" stroke-width="3"/>
+
+  <!-- [2,0] 普通 -->
+  <rect x="176" y="28" width="60" height="50" rx="7" fill="white" filter="url(#sh6)"/>
+  <rect x="181" y="33" width="50" height="36" rx="4" fill="#d0e8d0"/>
+  <circle cx="218" cy="44" r="7" fill="#40a040"/>
+  <polygon points="183,66 198,50 213,66" fill="#206020" opacity="0.7"/>
+
+  <!-- Row 2 -->
+  <!-- [0,1] 普通 -->
+  <rect x="20" y="94" width="60" height="50" rx="7" fill="white" filter="url(#sh6)"/>
+  <rect x="25" y="99" width="50" height="36" rx="4" fill="#d8e8f8"/>
+  <circle cx="62" cy="110" r="7" fill="#6080e0"/>
+  <polygon points="27,132 42,116 57,132" fill="#304080" opacity="0.7"/>
+
+  <!-- [1,1] ハイライト（青枠）→ [1,0]と類似 -->
+  <rect x="98" y="94" width="60" height="50" rx="7" fill="white" filter="url(#highlight)"/>
+  <rect x="103" y="99" width="50" height="36" rx="4" fill="#c0d0e8"/>
+  <circle cx="138" cy="110" r="7" fill="#f5c842"/>
+  <polygon points="105,132 120,116 135,132" fill="#3C5A8C" opacity="0.8"/>
+  <rect x="98" y="94" width="60" height="50" rx="7" fill="none" stroke="#3C5A8C" stroke-width="3"/>
+
+  <!-- [2,1] 普通 -->
+  <rect x="176" y="94" width="60" height="50" rx="7" fill="white" filter="url(#sh6)"/>
+  <rect x="181" y="99" width="50" height="36" rx="4" fill="#f0e8d8"/>
+  <circle cx="218" cy="110" r="7" fill="#e0b840"/>
+  <polygon points="183,132 198,116 213,132" fill="#806020" opacity="0.7"/>
+
+  <!-- ハイライトされた2枚を繋ぐ矢印（曲線） -->
+  <path d="M128 78 C128 86 128 86 128 94" fill="none" stroke="#3C5A8C" stroke-width="2.5" stroke-dasharray="4,3" marker-end="url(#arrow6)"/>
+  <defs>
+    <marker id="arrow6" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#3C5A8C"/>
+    </marker>
+  </defs>
+
+  <!-- 類似度バッジ -->
+  <rect x="94" y="155" width="68" height="22" rx="11" fill="#3C5A8C"/>
+  <text x="128" y="170" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" font-weight="700" fill="white">類似度 95%</text>
+
+  <!-- アプリ名 -->
+  <text x="128" y="210" text-anchor="middle" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#3C5A8C" letter-spacing="4">NIMONO</text>
+  <text x="128" y="232" text-anchor="middle" font-family="serif" font-size="12" fill="#3C5A8C" opacity="0.65" letter-spacing="2">似物</text>
+</svg>

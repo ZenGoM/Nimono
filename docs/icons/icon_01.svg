@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- コンセプト: 2枚の重なる画像フレーム（類似＝重なり） -->
+  <defs>
+    <linearGradient id="bg1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#3C5A8C"/>
+      <stop offset="100%" stop-color="#2a3f63"/>
+    </linearGradient>
+    <linearGradient id="frame2grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#3C783C"/>
+      <stop offset="100%" stop-color="#2a5a2a"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="3" dy="3" stdDeviation="4" flood-color="#00000044"/>
+    </filter>
+  </defs>
+
+  <!-- 背景 -->
+  <rect width="256" height="256" rx="40" fill="url(#bg1)"/>
+
+  <!-- 左の画像フレーム -->
+  <rect x="38" y="58" width="110" height="90" rx="10" fill="white" opacity="0.95" filter="url(#shadow)"/>
+  <rect x="38" y="58" width="110" height="90" rx="10" fill="none" stroke="white" stroke-width="2"/>
+  <!-- 山と太陽のイラスト（左） -->
+  <circle cx="100" cy="85" r="12" fill="#f5c842"/>
+  <polygon points="55,135 80,98 105,130" fill="#3C783C"/>
+  <polygon points="80,135 110,90 140,135" fill="#4a9a4a"/>
+  <rect x="38" y="58" width="110" height="90" rx="10" fill="none" stroke="white" stroke-width="2.5"/>
+
+  <!-- 右の画像フレーム（少しずらして重なる） -->
+  <rect x="108" y="108" width="110" height="90" rx="10" fill="url(#frame2grad)" opacity="0.92" filter="url(#shadow)"/>
+  <!-- 山と太陽のイラスト（右・似た構図） -->
+  <circle cx="170" cy="135" r="12" fill="#f5c842"/>
+  <polygon points="125,185 148,148 173,180" fill="#2a5a2a"/>
+  <polygon points="148,185 180,140 210,185" fill="#3C783C"/>
+  <rect x="108" y="108" width="110" height="90" rx="10" fill="none" stroke="white" stroke-width="2.5"/>
+
+  <!-- 類似度バッジ -->
+  <circle cx="128" cy="128" r="22" fill="white" filter="url(#shadow)"/>
+  <text x="128" y="134" text-anchor="middle" font-family="Arial Black, sans-serif" font-size="14" font-weight="900" fill="#3C5A8C">≈</text>
+
+  <!-- アプリ名 -->
+  <text x="128" y="218" text-anchor="middle" font-family="Arial, sans-serif" font-size="20" font-weight="700" fill="white" letter-spacing="4">NIMONO</text>
+  <text x="128" y="238" text-anchor="middle" font-family="serif" font-size="13" fill="white" opacity="0.75" letter-spacing="2">似物</text>
+</svg>

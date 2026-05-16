@@ -10,9 +10,9 @@ internal sealed class CompareForm : Form
 
     private SplitContainer _mainSplitter = null!;
     private ZoomableImagePanel _leftView = null!;
-    private Label _leftInfo = null!;
+    private RichTextBox _leftInfo = null!;
     private ZoomableImagePanel _rightView = null!;
-    private Label _rightInfo = null!;
+    private RichTextBox _rightInfo = null!;
     private ListView _fileList = null!;
     private ToolTip _toolTip = null!;
 
@@ -20,15 +20,36 @@ internal sealed class CompareForm : Form
     private Bitmap? _rightBitmap;
     private bool _suppressEvent;
     private bool _syncingView;
+    private int _currentRightIndex;
+    private List<string> _paths = null!;
+    private Dictionary<string, double> _similarities = null!;
+    private readonly List<string> _deletedPaths = new();
+
+    public IReadOnlyList<string> DeletedPaths => _deletedPaths;
+
+    public ImageGroup CurrentGroup
+    {
+        get
+        {
+            var hashes = _paths.ToDictionary(p => p, p => _group.Hashes[p]);
+            return new ImageGroup(
+                _group.Id,
+                _paths.ToList(),
+                new Dictionary<string, double>(_similarities),
+                hashes);
+        }
+    }
 
     public CompareForm(ImageGroup group, AppSettings settings)
     {
         _group = group;
         _settings = settings;
+        _paths = group.Paths.ToList();
+        _similarities = group.Similarities.ToDictionary(kv => kv.Key, kv => kv.Value);
         InitializeComponents();
-        PopulateList();
+        RebuildList();
         LoadLeft();
-        SetRightIndex(Math.Min(1, group.Paths.Count - 1));
+        SetRightIndex(Math.Min(1, _paths.Count - 1));
     }
 
     private void InitializeComponents()
@@ -37,6 +58,9 @@ internal sealed class CompareForm : Form
         MinimumSize = new Size(600, 400);
         Font = new Font("Segoe UI", 9.5f);
         StartPosition = FormStartPosition.CenterParent;
+        var exeIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+        if (exeIcon is not null)
+            Icon = exeIcon;
         Size = new Size(
             Math.Max(600, _settings.CompareFormWidth),
             Math.Max(400, _settings.CompareFormHeight));
@@ -64,8 +88,8 @@ internal sealed class CompareForm : Form
         imageTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         imageTable.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        (_leftView, _leftInfo) = BuildSide(imageTable, 0);
-        (_rightView, _rightInfo) = BuildSide(imageTable, 1);
+        (_leftView, _leftInfo) = BuildSide(imageTable, 0, () => ExecuteDelete(true), () => RotateView(true));
+        (_rightView, _rightInfo) = BuildSide(imageTable, 1, () => ExecuteDelete(false), () => RotateView(false));
 
         // 左右の拡大・位置を同期
         _leftView.ViewChanged += (_, vs) =>
@@ -105,29 +129,41 @@ internal sealed class CompareForm : Form
         _fileList.SelectedIndexChanged += (_, _) =>
         {
             if (_suppressEvent || _fileList.SelectedItems.Count == 0) return;
-            SetRightIndex((int)_fileList.SelectedItems[0].Tag!);
+            int idx = (int)_fileList.SelectedItems[0].Tag!;
+            if (idx == 0)
+            {
+                _suppressEvent = true;
+                _fileList.Items[_currentRightIndex].Selected = true;
+                _suppressEvent = false;
+                return;
+            }
+            SetRightIndex(idx);
         };
         _fileList.DoubleClick += (_, _) =>
         {
-            if (_fileList.SelectedItems.Count == 0) return;
-            OpenExternal(_group.Paths[(int)_fileList.SelectedItems[0].Tag!]);
+            var pos = _fileList.PointToClient(Cursor.Position);
+            var hit = _fileList.HitTest(pos).Item;
+            if (hit == null) return;
+            int idx = (int)hit.Tag!;
+            if (idx == 0) return; // 基準行は無視
+            SwapReference(idx);
         };
 
         var listMenu = new ContextMenuStrip();
         listMenu.Items.Add("開く", null, (_, _) =>
         {
             if (_fileList.SelectedItems.Count > 0)
-                OpenExternal(_group.Paths[(int)_fileList.SelectedItems[0].Tag!]);
+                OpenExternal(_paths[(int)_fileList.SelectedItems[0].Tag!]);
         });
         listMenu.Items.Add("フォルダーを開く", null, (_, _) =>
         {
             if (_fileList.SelectedItems.Count > 0)
-                OpenFolder(_group.Paths[(int)_fileList.SelectedItems[0].Tag!]);
+                OpenFolder(_paths[(int)_fileList.SelectedItems[0].Tag!]);
         });
         listMenu.Items.Add("パスをコピー", null, (_, _) =>
         {
             if (_fileList.SelectedItems.Count > 0)
-                try { Clipboard.SetText(_group.Paths[(int)_fileList.SelectedItems[0].Tag!]); } catch { }
+                try { Clipboard.SetText(_paths[(int)_fileList.SelectedItems[0].Tag!]); } catch { }
         });
         _fileList.ContextMenuStrip = listMenu;
 
@@ -145,7 +181,8 @@ internal sealed class CompareForm : Form
         _mainSplitter.SplitterMoved += (_, _) => PersistSettings();
     }
 
-    private (ZoomableImagePanel view, Label info) BuildSide(TableLayoutPanel table, int column)
+    private (ZoomableImagePanel view, RichTextBox info) BuildSide(
+        TableLayoutPanel table, int column, Action onDelete, Action onRotate)
     {
         bool isLeft = column == 0;
         var outer = new Panel
@@ -172,19 +209,52 @@ internal sealed class CompareForm : Form
             BackColor = Color.FromArgb(210, 210, 218),
         };
 
-        var info = new Label
+        // 情報ラベルコンテナ（削除ボタンをオーバーレイ）
+        var infoPanel = new Panel
         {
             Dock = DockStyle.Bottom,
             Height = 80,
-            Padding = new Padding(8, 4, 8, 4),
             BackColor = Color.FromArgb(245, 245, 248),
-            Font = new Font("Segoe UI", 8.5f),
-            ForeColor = Color.FromArgb(40, 40, 40),
-            TextAlign = ContentAlignment.TopLeft,
         };
+
+        var info = new RichTextBox
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(8, 4, 8, 4),
+            ReadOnly = true,
+            BackColor = Color.FromArgb(245, 245, 248),
+            BorderStyle = BorderStyle.None,
+            ScrollBars = RichTextBoxScrollBars.None,
+            DetectUrls = false,
+            WordWrap = false,
+            Font = new Font("Segoe UI", 8.5f),
+            Cursor = Cursors.Default,
+            TabStop = false,
+        };
+
+        var deleteBtn = new Button
+        {
+            Text = "削除",
+            Size = new Size(44, 22),
+            Font = new Font("Segoe UI", 8f),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Color.FromArgb(190, 55, 55),
+            ForeColor = Color.White,
+            TabStop = false,
+            Cursor = Cursors.Default,
+        };
+        deleteBtn.FlatAppearance.BorderSize = 0;
+        deleteBtn.Click += (_, _) => onDelete();
+        infoPanel.SizeChanged += (_, _) =>
+            deleteBtn.Location = new Point(infoPanel.Width - deleteBtn.Width - 2, 2);
+
+        infoPanel.Controls.Add(info);
+        infoPanel.Controls.Add(deleteBtn);
+        deleteBtn.BringToFront();
 
         var menu = new ContextMenuStrip();
         menu.Items.Add("開く", null, (_, _) => OpenExternal(view.Tag as string));
+        menu.Items.Add("回転", null, (_, _) => onRotate());
         menu.Items.Add("フォルダーを開く", null, (_, _) => OpenFolder(view.Tag as string));
         menu.Items.Add("パスをコピー", null, (_, _) =>
         {
@@ -193,24 +263,27 @@ internal sealed class CompareForm : Form
         view.ContextMenuStrip = menu;
 
         outer.Controls.Add(view);
-        outer.Controls.Add(info);
+        outer.Controls.Add(infoPanel);
         outer.Controls.Add(roleLabel);
         table.Controls.Add(outer, column, 0);
         return (view, info);
     }
 
-    private void PopulateList()
+    private void RebuildList()
     {
+        _suppressEvent = true;
         _fileList.BeginUpdate();
-        for (int i = 0; i < _group.Paths.Count; i++)
+        _fileList.Items.Clear();
+        for (int i = 0; i < _paths.Count; i++)
         {
-            var path = _group.Paths[i];
+            var path = _paths[i];
             try
             {
                 var fi = new FileInfo(path);
-                double sim = _group.Similarities.TryGetValue(path, out var s) ? s : 0.0;
-                string sizeText = ReadImageSizeText(path);
-                _sizeCache[path] = sizeText;
+                double sim = _similarities.TryGetValue(path, out var s) ? s : 0.0;
+                if (!_sizeCache.ContainsKey(path))
+                    _sizeCache[path] = ReadImageSizeText(path);
+                string sizeText = _sizeCache[path];
 
                 string simText = i == 0 ? "【基準】" : $"{sim:P0}";
                 var item = new ListViewItem(simText) { Tag = i };
@@ -225,45 +298,235 @@ internal sealed class CompareForm : Form
             catch { }
         }
         _fileList.EndUpdate();
+        _suppressEvent = false;
     }
 
     private void LoadLeft()
     {
-        if (_group.Paths.Count == 0) return;
-        var path = _group.Paths[0];
+        if (_paths.Count == 0) return;
+        var path = _paths[0];
         _leftBitmap?.Dispose();
-        _leftBitmap = LoadBitmap(path);
+        _leftBitmap = LoadAndRotate(path);
         _leftView.Image = _leftBitmap;
         _leftView.Tag = path;
         _toolTip.SetToolTip(_leftView, path);
-        _leftInfo.Text = BuildInfoText(path, 0);
+        SetInfoContent(_leftInfo, path, 0, null);
     }
 
     private void SetRightIndex(int index)
     {
-        if (index < 0 || index >= _group.Paths.Count) return;
+        if (index < 0 || index >= _paths.Count) return;
         _suppressEvent = true;
         _fileList.Items[index].Selected = true;
         _fileList.Items[index].EnsureVisible();
         _suppressEvent = false;
 
-        var path = _group.Paths[index];
+        _currentRightIndex = index;
+        var path = _paths[index];
         _rightBitmap?.Dispose();
-        _rightBitmap = LoadBitmap(path);
+        _rightBitmap = LoadAndRotate(path);
         _rightView.Image = _rightBitmap;
         _rightView.Tag = path;
         _toolTip.SetToolTip(_rightView, path);
-        _rightInfo.Text = BuildInfoText(path, index);
+
+        string leftPath = _paths[0];
+        SetInfoContent(_leftInfo, leftPath, 0, path);
+        SetInfoContent(_rightInfo, path, index, leftPath);
     }
 
-    private string BuildInfoText(string path, int index)
+    private void SetInfoContent(RichTextBox rtb, string path, int index, string? otherPath)
     {
+        rtb.Clear();
         var fi = new FileInfo(path);
-        double sim = _group.Similarities.TryGetValue(path, out var s) ? s : 0.0;
+        double sim = _similarities.TryGetValue(path, out var s) ? s : 0.0;
         string role = index == 0 ? "【基準】" : $"類似度: {sim:P0}";
         string res = _sizeCache.TryGetValue(path, out var r) ? r : ReadImageSizeText(path);
         string ext = fi.Extension.TrimStart('.').ToUpperInvariant();
-        return $"{Path.GetFileName(path)}\n{role}\n{ext} · {FormatFileSize(fi.Length)}  {res}  {fi.LastWriteTime:yyyy/MM/dd}\n{path}";
+        string fileName = Path.GetFileName(path);
+        string sizeText = FormatFileSize(fi.Length);
+        string dateText = fi.LastWriteTime.ToString("yyyy/MM/dd");
+
+        FileInfo? otherFi = otherPath != null ? new FileInfo(otherPath) : null;
+        string? otherExt = otherFi?.Extension.TrimStart('.').ToUpperInvariant();
+        string? otherRes = otherPath != null
+            ? (_sizeCache.TryGetValue(otherPath, out var or) ? or : ReadImageSizeText(otherPath))
+            : null;
+        string? otherDate = otherFi?.LastWriteTime.ToString("yyyy/MM/dd");
+        string? otherFileName = otherPath != null ? Path.GetFileName(otherPath) : null;
+
+        // Line 1: ファイル名（文字単位diff）
+        AppendCharDiff(rtb, fileName, otherFileName);
+        AppendColored(rtb, "\n", false);
+        // Line 2: 役割（比較しない）
+        AppendColored(rtb, role + "\n", false);
+        // Line 3: 形式 · サイズ  解像度  日付（フィールド単位diff）
+        AppendColored(rtb, ext, otherExt != null && ext != otherExt);
+        AppendColored(rtb, " · ", false);
+        AppendColored(rtb, sizeText, otherFi != null && fi.Length != otherFi.Length);
+        AppendColored(rtb, "  ", false);
+        AppendColored(rtb, res, otherRes != null && res != otherRes);
+        AppendColored(rtb, "  ", false);
+        AppendColored(rtb, dateText + "\n", otherDate != null && dateText != otherDate);
+        // Line 4: フルパス（文字単位diff）
+        AppendCharDiff(rtb, path, otherPath);
+    }
+
+    private void RotateView(bool isLeft)
+    {
+        ref Bitmap? bmpRef = ref isLeft ? ref _leftBitmap : ref _rightBitmap;
+        var view = isLeft ? _leftView : _rightView;
+        if (bmpRef == null || view.Tag is not string path) return;
+
+        var rotated = (Bitmap)bmpRef.Clone();
+        rotated.RotateFlip(RotateFlipType.Rotate90FlipNone);
+        bmpRef.Dispose();
+        bmpRef = rotated;
+        view.Image = rotated;
+
+        _settings.ThumbnailRotations.TryGetValue(path, out int prevRot);
+        int newRot = (prevRot + 1) % 4;
+        if (newRot == 0)
+            _settings.ThumbnailRotations.Remove(path);
+        else
+            _settings.ThumbnailRotations[path] = newRot;
+        SettingsStorage.Save(_settings);
+
+        // 情報ラベルの diff も更新（回転でサイズ変化なしのため変更なし）
+    }
+
+    private void ExecuteDelete(bool isLeft)
+    {
+        string path = isLeft ? _paths[0] : _paths[_currentRightIndex];
+        string fileName = Path.GetFileName(path);
+
+        var dlgResult = MessageBox.Show(
+            $"次のファイルをゴミ箱に移動しますか？\n\n{path}",
+            "削除の確認",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2);
+        if (dlgResult != DialogResult.Yes) return;
+
+        try
+        {
+            Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile(
+                path,
+                Microsoft.VisualBasic.FileIO.UIOption.OnlyErrorDialogs,
+                Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"削除に失敗しました:\n{ex.Message}", "エラー",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        _deletedPaths.Add(path);
+        _paths.Remove(path);
+        _similarities.Remove(path);
+
+        if (_paths.Count < 2) { Close(); return; }
+
+        if (isLeft)
+        {
+            // 基準が削除されたので 2 番目を基準に再計算
+            RebuildAfterReferenceChange();
+        }
+        else
+        {
+            // 比較対象が削除されたので次を選択
+            int nextIndex = Math.Min(_currentRightIndex, _paths.Count - 1);
+            if (nextIndex == 0) nextIndex = 1;
+            RebuildList();
+            SetRightIndex(nextIndex);
+        }
+    }
+
+    private void RebuildAfterReferenceChange(string? preferredRightPath = null)
+    {
+        ulong refHash = _group.Hashes[_paths[0]];
+        _similarities = _paths.ToDictionary(p => p,
+            p => ImageHasher.Similarity(refHash, _group.Hashes[p]));
+
+        var reference = _paths[0];
+        var rest = _paths.Skip(1).OrderByDescending(p => _similarities[p]).ToList();
+        _paths = new List<string> { reference };
+        _paths.AddRange(rest);
+
+        RebuildList();
+        LoadLeft();
+
+        int rightIndex = preferredRightPath != null
+            ? _paths.IndexOf(preferredRightPath)
+            : -1;
+        SetRightIndex(rightIndex > 0 ? rightIndex : 1);
+    }
+
+    private void SwapReference(int clickedIdx)
+    {
+        string oldRef = _paths[0];
+        string newRef = _paths[clickedIdx];
+        _paths.RemoveAt(clickedIdx);
+        _paths.Insert(0, newRef);
+        RebuildAfterReferenceChange(preferredRightPath: oldRef);
+    }
+
+    // 共通プレフィックス／サフィックスを通常色、中間の差分部分を赤で追記する
+    private static void AppendCharDiff(RichTextBox rtb, string text, string? other)
+    {
+        if (other == null || text == other)
+        {
+            AppendColored(rtb, text, false);
+            return;
+        }
+
+        // 共通プレフィックス長
+        int prefixLen = 0;
+        int maxPrefix = Math.Min(text.Length, other.Length);
+        while (prefixLen < maxPrefix && text[prefixLen] == other[prefixLen])
+            prefixLen++;
+
+        // 共通サフィックス長（プレフィックス除去後の残り部分で計算）
+        int suffixLen = 0;
+        int maxSuffix = Math.Min(text.Length - prefixLen, other.Length - prefixLen);
+        while (suffixLen < maxSuffix &&
+               text[text.Length - 1 - suffixLen] == other[other.Length - 1 - suffixLen])
+            suffixLen++;
+
+        // プレフィックス（通常色）
+        if (prefixLen > 0)
+            AppendColored(rtb, text[..prefixLen], false);
+        // 中間（差分 → 赤）
+        int middleEnd = text.Length - suffixLen;
+        if (middleEnd > prefixLen)
+            AppendColored(rtb, text[prefixLen..middleEnd], true);
+        // サフィックス（通常色）
+        if (suffixLen > 0)
+            AppendColored(rtb, text[^suffixLen..], false);
+    }
+
+    private static void AppendColored(RichTextBox rtb, string text, bool isRed)
+    {
+        rtb.SelectionStart = rtb.TextLength;
+        rtb.SelectionLength = 0;
+        rtb.SelectionColor = isRed ? Color.FromArgb(200, 0, 0) : Color.FromArgb(40, 40, 40);
+        rtb.AppendText(text);
+    }
+
+    private Bitmap? LoadAndRotate(string path)
+    {
+        var bmp = LoadBitmap(path);
+        if (bmp != null && _settings.ThumbnailRotations.TryGetValue(path, out int rot) && rot > 0)
+        {
+            var rotType = rot switch
+            {
+                1 => RotateFlipType.Rotate90FlipNone,
+                2 => RotateFlipType.Rotate180FlipNone,
+                _ => RotateFlipType.Rotate270FlipNone,
+            };
+            bmp.RotateFlip(rotType);
+        }
+        return bmp;
     }
 
     private static Bitmap? LoadBitmap(string path, int maxDim = 2000)

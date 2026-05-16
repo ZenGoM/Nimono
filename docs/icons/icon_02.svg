@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- コンセプト: 鏡面対称・左右対称の2枚の写真 -->
+  <defs>
+    <linearGradient id="bg2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#EBEBF0"/>
+      <stop offset="100%" stop-color="#d0d0da"/>
+    </linearGradient>
+    <filter id="sh2" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="2" dy="4" stdDeviation="5" flood-color="#00000033"/>
+    </filter>
+  </defs>
+
+  <!-- 背景 -->
+  <rect width="256" height="256" rx="40" fill="url(#bg2)"/>
+
+  <!-- 左フレーム -->
+  <rect x="22" y="70" width="96" height="116" rx="10" fill="white" filter="url(#sh2)"/>
+  <rect x="22" y="70" width="96" height="116" rx="10" fill="none" stroke="#3C5A8C" stroke-width="3"/>
+  <!-- 左画像内容 -->
+  <rect x="30" y="78" width="80" height="55" rx="4" fill="#c8d8f0"/>
+  <circle cx="80" cy="100" r="10" fill="#f5c842"/>
+  <polygon points="37,128 58,103 80,125" fill="#3C783C"/>
+  <polygon points="58,128 82,100 106,128" fill="#4a9a4a" opacity="0.8"/>
+  <!-- 下部情報バー -->
+  <rect x="30" y="140" width="80" height="8" rx="3" fill="#d0d8e8"/>
+  <rect x="30" y="155" width="55" height="6" rx="3" fill="#d0d8e8"/>
+  <rect x="30" y="167" width="70" height="6" rx="3" fill="#d0d8e8"/>
+
+  <!-- 中央の等号/類似マーク -->
+  <text x="128" y="132" text-anchor="middle" font-family="Arial, sans-serif" font-size="28" font-weight="900" fill="#3C5A8C">≈</text>
+
+  <!-- 右フレーム（鏡像） -->
+  <rect x="138" y="70" width="96" height="116" rx="10" fill="white" filter="url(#sh2)"/>
+  <rect x="138" y="70" width="96" height="116" rx="10" fill="none" stroke="#3C783C" stroke-width="3"/>
+  <!-- 右画像内容（同じ構図） -->
+  <rect x="146" y="78" width="80" height="55" rx="4" fill="#c8e8c8"/>
+  <circle cx="172" cy="100" r="10" fill="#f5c842"/>
+  <polygon points="150,128 172,103 194,125" fill="#3C5A8C"/>
+  <polygon points="172,128 196,100 226,128" fill="#4a6aaa" opacity="0.8"/>
+  <rect x="146" y="140" width="80" height="8" rx="3" fill="#c8e0c8"/>
+  <rect x="146" y="155" width="55" height="6" rx="3" fill="#c8e0c8"/>
+  <rect x="146" y="167" width="70" height="6" rx="3" fill="#c8e0c8"/>
+
+  <!-- アプリ名 -->
+  <text x="128" y="212" text-anchor="middle" font-family="Arial, sans-serif" font-size="19" font-weight="700" fill="#3C5A8C" letter-spacing="4">NIMONO</text>
+  <text x="128" y="232" text-anchor="middle" font-family="serif" font-size="13" fill="#3C5A8C" opacity="0.7" letter-spacing="2">似物</text>
+</svg>

@@ -9,10 +9,12 @@
     <AssemblyName>Nimono</AssemblyName>
     <RootNamespace>Nimono</RootNamespace>
     <ApplicationDefaultFont>Segoe UI, 9pt</ApplicationDefaultFont>
+    <ApplicationIcon>app.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <Compile Remove="Nimono.Tests\**\*.cs" />
+    <Compile Remove="tools\**\*.cs" />
   </ItemGroup>
 
 </Project>

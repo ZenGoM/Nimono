@@ -11,6 +11,8 @@ internal sealed class AppSettings
     public int CompareFormWidth { get; set; } = 900;
     public int CompareFormHeight { get; set; } = 700;
     public int CompareSplitterDistance { get; set; } = 0;
+    // パスごとのサムネイル回転回数（1=90°, 2=180°, 3=270°）。0は保存しない
+    public Dictionary<string, int> ThumbnailRotations { get; set; } = new();
 }
 
 internal static class SettingsStorage
