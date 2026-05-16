@@ -319,7 +319,7 @@ public class MainForm : Form
         var flow = _groupFlows[groupId];
         int flowWidth = Math.Max(1, panel.Width - 2); // FixedSingle border = 1px each side
         int flowHeight = flow.GetPreferredSize(new Size(flowWidth, int.MaxValue)).Height;
-        panel.Height = 24 + flowHeight + 2;
+        panel.Height = 28 + flowHeight + 2; // 28 = header panel height
     }
 
     private void RecalculateAllPanelPositions()
@@ -390,17 +390,42 @@ public class MainForm : Form
 
     private Panel BuildGroupPanel(ImageGroup group)
     {
-        var header = new Label
+        var header = new Panel
         {
-            Text = $"グループ {group.Id} — {group.Paths.Count} 枚",
             Dock = DockStyle.Top,
-            Height = 24,
+            Height = 28,
             BackColor = Color.FromArgb(60, 90, 140),
+        };
+        var headerLabel = new Label
+        {
+            Dock = DockStyle.Fill,
+            Text = $"グループ {group.Id} — {group.Paths.Count} 枚",
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
             TextAlign = ContentAlignment.MiddleLeft,
             Padding = new Padding(8, 0, 0, 0),
         };
+        var compareButton = new Button
+        {
+            Text = "比較",
+            Dock = DockStyle.Right,
+            Width = 56,
+            FlatStyle = FlatStyle.Flat,
+            ForeColor = Color.White,
+            BackColor = Color.FromArgb(45, 75, 125),
+            Font = new Font("Segoe UI", 8.5f),
+            Cursor = Cursors.Hand,
+        };
+        compareButton.FlatAppearance.BorderColor = Color.FromArgb(80, 110, 160);
+        compareButton.FlatAppearance.BorderSize = 0;
+        compareButton.Click += (_, _) =>
+        {
+            var current = _groups.FirstOrDefault(g => g.Id == group.Id) ?? group;
+            using var f = new CompareForm(current, _settings);
+            f.ShowDialog(this);
+        };
+        header.Controls.Add(headerLabel);
+        header.Controls.Add(compareButton);
 
         var flow = new FlowLayoutPanel
         {

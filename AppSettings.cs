@@ -8,6 +8,9 @@ internal sealed class AppSettings
     public int SimilarityThreshold { get; set; } = 85;
     public int WindowWidth { get; set; } = 1100;
     public int WindowHeight { get; set; } = 750;
+    public int CompareFormWidth { get; set; } = 900;
+    public int CompareFormHeight { get; set; } = 700;
+    public int CompareSplitterDistance { get; set; } = 0;
 }
 
 internal static class SettingsStorage
