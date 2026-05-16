@@ -79,12 +79,13 @@ internal sealed class CompareForm : Form
             MultiSelect = false,
             Font = new Font("Segoe UI", 9f),
         };
-        _fileList.Columns.Add("ファイル名", 220);
+        _fileList.Columns.Add("類似度", 70);
+        _fileList.Columns.Add("ファイル名", 200);
         _fileList.Columns.Add("形式", 55);
         _fileList.Columns.Add("サイズ", 80);
         _fileList.Columns.Add("解像度", 100);
         _fileList.Columns.Add("日付", 90);
-        _fileList.Columns.Add("類似度", 70);
+        _fileList.Columns.Add("フルパス", 300);
         _fileList.SelectedIndexChanged += (_, _) =>
         {
             if (_suppressEvent || _fileList.SelectedItems.Count == 0) return;
@@ -159,7 +160,7 @@ internal sealed class CompareForm : Form
         var info = new Label
         {
             Dock = DockStyle.Bottom,
-            Height = 64,
+            Height = 80,
             Padding = new Padding(8, 4, 8, 4),
             BackColor = Color.FromArgb(245, 245, 248),
             Font = new Font("Segoe UI", 8.5f),
@@ -197,15 +198,14 @@ internal sealed class CompareForm : Form
                 string sizeText = ReadImageSizeText(path);
                 _sizeCache[path] = sizeText;
 
-                string name = i == 0
-                    ? $"{Path.GetFileName(path)}  [基準]"
-                    : Path.GetFileName(path);
-                var item = new ListViewItem(name) { Tag = i };
+                string simText = i == 0 ? "【基準】" : $"{sim:P0}";
+                var item = new ListViewItem(simText) { Tag = i };
+                item.SubItems.Add(Path.GetFileName(path));
                 item.SubItems.Add(fi.Extension.TrimStart('.').ToUpperInvariant());
                 item.SubItems.Add(FormatFileSize(fi.Length));
                 item.SubItems.Add(sizeText);
                 item.SubItems.Add(fi.LastWriteTime.ToString("yyyy/MM/dd"));
-                item.SubItems.Add($"{sim:P0}");
+                item.SubItems.Add(path);
                 _fileList.Items.Add(item);
             }
             catch { }
@@ -249,7 +249,7 @@ internal sealed class CompareForm : Form
         string role = index == 0 ? "【基準】" : $"類似度: {sim:P0}";
         string res = _sizeCache.TryGetValue(path, out var r) ? r : ReadImageSizeText(path);
         string ext = fi.Extension.TrimStart('.').ToUpperInvariant();
-        return $"{Path.GetFileName(path)}\n{role}  {ext} · {FormatFileSize(fi.Length)}  {res}  {fi.LastWriteTime:yyyy/MM/dd}\n{path}";
+        return $"{Path.GetFileName(path)}\n{role}\n{ext} · {FormatFileSize(fi.Length)}  {res}  {fi.LastWriteTime:yyyy/MM/dd}\n{path}";
     }
 
     private static Bitmap? LoadBitmap(string path, int maxDim = 2000)
