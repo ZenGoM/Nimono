@@ -20,10 +20,14 @@ public class MainForm : Form
     private Button _scanButton = null!;
     private Button _cancelButton = null!;
     private NumericUpDown _thresholdInput = null!;
+    private ComboBox _methodCombo = null!;
+    private Panel _modelPanel = null!;
+    private Label _modelPathLabel = null!;
     private Label _statusLabel = null!;
     private ProgressBar _progressBar = null!;
     private VirtualScrollPanel _resultsPanel = null!;
     private ToolTip _toolTip = null!;
+    private DINOv2Embedder? _embedder;
 
     public MainForm()
     {
@@ -32,8 +36,11 @@ public class MainForm : Form
         _folders.AddRange(_settings.SearchFolders.Where(Directory.Exists));
         _thresholdInput.Value = Math.Clamp(_settings.SimilarityThreshold, 50, 100);
         _thresholdInput.ValueChanged += (_, _) => SaveSettings();
+        _methodCombo.SelectedItem = _settings.SimilarityMethod == "DINOv2" ? "DINOv2（高精度）" : "pHash（高速）";
+        UpdateModelPanel();
         Size = new Size(_settings.WindowWidth, _settings.WindowHeight);
         ResizeEnd += (_, _) => { SaveSettings(); RecalculateAllPanelPositions(); };
+        FormClosed += (_, _) => { _embedder?.Dispose(); _cts?.Cancel(); };
         if (_folders.Count > 0)
         {
             _scanButton.Enabled = true;
@@ -61,6 +68,41 @@ public class MainForm : Form
             Padding = new Padding(8, 6, 8, 6),
             BackColor = SystemColors.Control,
         };
+
+        // DINOv2 モデルパス行（DINOv2 選択時のみ表示）
+        _modelPanel = new Panel
+        {
+            Dock = DockStyle.Top,
+            Height = 30,
+            Padding = new Padding(8, 4, 8, 4),
+            BackColor = Color.FromArgb(240, 244, 255),
+            Visible = false,
+        };
+        var modelLabel = new Label
+        {
+            Text = "DINOv2 モデル:",
+            Left = 0, Top = 6, Width = 110,
+            TextAlign = ContentAlignment.MiddleLeft,
+        };
+        _modelPathLabel = new Label
+        {
+            Text = "（未設定）",
+            Left = 112, Top = 6,
+            Width = 560, Height = 20,
+            TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = Color.Gray,
+        };
+        var browseButton = new Button
+        {
+            Text = "参照...",
+            Left = 676, Top = 3,
+            Width = 70, Height = 24,
+        };
+        browseButton.Click += BrowseDINOv2Model_Click;
+        _toolTip?.SetToolTip(browseButton,
+            "DINOv2 の ONNX モデルファイル（.onnx）を選択します。\n" +
+            "HuggingFace の onnx-community/dinov2-small などからダウンロードできます。");
+        _modelPanel.Controls.AddRange([modelLabel, _modelPathLabel, browseButton]);
 
         _selectFoldersButton = new Button
         {
@@ -111,6 +153,32 @@ public class MainForm : Form
             TextAlign = ContentAlignment.MiddleLeft,
         };
 
+        var methodLabel = new Label
+        {
+            Text = "計算方法:",
+            Left = 472,
+            Top = 9,
+            Width = 70,
+            TextAlign = ContentAlignment.MiddleLeft,
+        };
+        _methodCombo = new ComboBox
+        {
+            Left = 544,
+            Top = 6,
+            Width = 140,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+        };
+        _methodCombo.Items.AddRange(["pHash（高速）", "DINOv2（高精度）"]);
+        _methodCombo.SelectedIndex = 0;
+        _methodCombo.SelectedIndexChanged += (_, _) =>
+        {
+            bool isDINOv2 = _methodCombo.SelectedIndex == 1;
+            _settings.SimilarityMethod = isDINOv2 ? "DINOv2" : "pHash";
+            if (!isDINOv2) { _embedder?.Dispose(); _embedder = null; }
+            UpdateModelPanel();
+            SaveSettings();
+        };
+
         _cancelButton = new Button
         {
             Text = "キャンセル",
@@ -125,6 +193,8 @@ public class MainForm : Form
         toolPanel.Controls.Add(thresholdLabel);
         toolPanel.Controls.Add(_thresholdInput);
         toolPanel.Controls.Add(pctLabel);
+        toolPanel.Controls.Add(methodLabel);
+        toolPanel.Controls.Add(_methodCombo);
         toolPanel.Controls.Add(_cancelButton);
 
         var statusPanel = new Panel
@@ -161,6 +231,7 @@ public class MainForm : Form
 
         Controls.Add(_resultsPanel);
         Controls.Add(statusPanel);
+        Controls.Add(_modelPanel);
         Controls.Add(toolPanel);
     }
 
@@ -189,9 +260,82 @@ public class MainForm : Form
         SettingsStorage.Save(_settings);
     }
 
+    private void UpdateModelPanel()
+    {
+        bool isDINOv2 = _settings.SimilarityMethod == "DINOv2";
+        _modelPanel.Visible = isDINOv2;
+        if (isDINOv2)
+        {
+            if (string.IsNullOrEmpty(_settings.DINOv2ModelPath))
+            {
+                _modelPathLabel.Text = "（未設定） — 「参照...」でモデルファイルを選択してください";
+                _modelPathLabel.ForeColor = Color.OrangeRed;
+            }
+            else
+            {
+                _modelPathLabel.Text = _settings.DINOv2ModelPath;
+                _modelPathLabel.ForeColor = File.Exists(_settings.DINOv2ModelPath)
+                    ? Color.DarkGreen : Color.OrangeRed;
+            }
+        }
+    }
+
+    private void BrowseDINOv2Model_Click(object? sender, EventArgs e)
+    {
+        using var dlg = new OpenFileDialog
+        {
+            Title = "DINOv2 ONNX モデルを選択",
+            Filter = "ONNX モデル (*.onnx)|*.onnx|すべてのファイル (*.*)|*.*",
+            FileName = _settings.DINOv2ModelPath,
+        };
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+        // モデルを検証してからロード
+        _embedder?.Dispose();
+        _embedder = null;
+        if (!DINOv2Embedder.TryCreate(dlg.FileName, out var embedder, out string error))
+        {
+            MessageBox.Show(this,
+                $"モデルの読み込みに失敗しました。\n\n{error}",
+                "DINOv2 エラー", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        _embedder = embedder;
+        _settings.DINOv2ModelPath = dlg.FileName;
+        SaveSettings();
+        UpdateModelPanel();
+        _statusLabel.Text = $"DINOv2 モデル読み込み完了（埋め込み次元: {embedder.EmbeddingDim}）";
+    }
+
     private async void Scan_Click(object? sender, EventArgs e)
     {
         if (_folders.Count == 0) return;
+
+        bool isDINOv2 = _settings.SimilarityMethod == "DINOv2";
+
+        // DINOv2 の場合はモデルが必要
+        if (isDINOv2)
+        {
+            if (string.IsNullOrEmpty(_settings.DINOv2ModelPath) || !File.Exists(_settings.DINOv2ModelPath))
+            {
+                MessageBox.Show(this,
+                    "DINOv2 モデルファイルが設定されていません。\n" +
+                    "「参照...」ボタンでモデル（.onnx）を選択してください。\n\n" +
+                    "モデルは HuggingFace の onnx-community/dinov2-small などから入手できます。",
+                    "DINOv2 モデル未設定", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            if (_embedder is null)
+            {
+                if (!DINOv2Embedder.TryCreate(_settings.DINOv2ModelPath, out var emb, out string err))
+                {
+                    MessageBox.Show(this, $"モデルの読み込みに失敗しました。\n\n{err}",
+                        "DINOv2 エラー", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                _embedder = emb;
+            }
+        }
 
         _cts?.Cancel();
         _cts = new CancellationTokenSource();
@@ -221,17 +365,33 @@ public class MainForm : Form
                 return;
             }
 
-            // 2) ハッシュ計算
+            // 2) 特徴量計算
             _progressBar.Style = ProgressBarStyle.Continuous;
             _progressBar.Value = 0;
-            var entries = await Task.Run(
-                () => ImageGrouper.ComputeHashes(files, progress, token), token);
 
-            if (token.IsCancellationRequested) return;
+            IReadOnlyList<ImageGroup> groups;
+            if (isDINOv2 && _embedder is not null)
+            {
+                var embeddings = await Task.Run(
+                    () => ImageGrouper.ComputeEmbeddings(files, _embedder, progress, token), token);
 
-            // 3) グルーピング
-            var groups = await Task.Run(
-                () => ImageGrouper.Group(entries, threshold, progress, token), token);
+                if (token.IsCancellationRequested) return;
+
+                // 3) グルーピング（コサイン類似度）
+                groups = await Task.Run(
+                    () => ImageGrouper.GroupByEmbedding(embeddings, threshold, progress, token), token);
+            }
+            else
+            {
+                var entries = await Task.Run(
+                    () => ImageGrouper.ComputeHashes(files, progress, token), token);
+
+                if (token.IsCancellationRequested) return;
+
+                // 3) グルーピング（ハミング距離）
+                groups = await Task.Run(
+                    () => ImageGrouper.Group(entries, threshold, progress, token), token);
+            }
 
             if (token.IsCancellationRequested) return;
 
@@ -272,6 +432,7 @@ public class MainForm : Form
         _selectFoldersButton.Enabled = !scanning;
         _scanButton.Enabled = !scanning && _folders.Count > 0;
         _thresholdInput.Enabled = !scanning;
+        _methodCombo.Enabled = !scanning;
         _cancelButton.Enabled = scanning;
         if (!scanning)
         {
@@ -611,11 +772,26 @@ public class MainForm : Form
 
     private static ImageGroup RecalculateGroup(ImageGroup group, string referencePath)
     {
-        ulong refHash = group.Hashes[referencePath];
-        var newSimilarities = group.Hashes.ToDictionary(
-            kv => kv.Key,
-            kv => ImageHasher.Similarity(refHash, kv.Value));
-        // referencePath を必ず先頭に置く（同一 pHash の画像と並んだ時の不安定ソートを防ぐ）
+        Dictionary<string, double> newSimilarities;
+
+        if (group.Embeddings is { Count: > 0 } embs && embs.ContainsKey(referencePath))
+        {
+            // DINOv2: コサイン類似度で再計算
+            var refEmb = embs[referencePath];
+            newSimilarities = embs.ToDictionary(
+                kv => kv.Key,
+                kv => (double)DINOv2Embedder.CosineSimilarity(refEmb, kv.Value));
+        }
+        else if (group.Hashes.TryGetValue(referencePath, out ulong refHash))
+        {
+            // pHash: ハミング距離で再計算
+            newSimilarities = group.Hashes.ToDictionary(
+                kv => kv.Key,
+                kv => ImageHasher.Similarity(refHash, kv.Value));
+        }
+        else return group;
+
+        // referencePath を必ず先頭に置く（同一スコアの画像との不安定ソートを防ぐ）
         var newPaths = newSimilarities
             .Where(kv => kv.Key != referencePath)
             .OrderByDescending(kv => kv.Value)

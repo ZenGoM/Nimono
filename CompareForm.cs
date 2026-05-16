@@ -31,12 +31,18 @@ internal sealed class CompareForm : Form
     {
         get
         {
-            var hashes = _paths.ToDictionary(p => p, p => _group.Hashes[p]);
+            var hashes = _group.Hashes.Count > 0
+                ? (IReadOnlyDictionary<string, ulong>)_paths.ToDictionary(p => p, p => _group.Hashes[p])
+                : new Dictionary<string, ulong>();
+            var embeddings = _group.Embeddings is { Count: > 0 } embs
+                ? (IReadOnlyDictionary<string, float[]>)_paths.ToDictionary(p => p, p => embs[p])
+                : null;
             return new ImageGroup(
                 _group.Id,
                 _paths.ToList(),
                 new Dictionary<string, double>(_similarities),
-                hashes);
+                hashes,
+                embeddings);
         }
     }
 
@@ -444,13 +450,22 @@ internal sealed class CompareForm : Form
 
     private void RebuildAfterReferenceChange(string? preferredRightPath = null)
     {
-        ulong refHash = _group.Hashes[_paths[0]];
-        _similarities = _paths.ToDictionary(p => p,
-            p => ImageHasher.Similarity(refHash, _group.Hashes[p]));
-
         var reference = _paths[0];
+        if (_group.Embeddings is { Count: > 0 } embs && embs.ContainsKey(reference))
+        {
+            var refEmb = embs[reference];
+            _similarities = _paths.ToDictionary(p => p,
+                p => (double)DINOv2Embedder.CosineSimilarity(refEmb, embs[p]));
+        }
+        else
+        {
+            ulong refHash = _group.Hashes[reference];
+            _similarities = _paths.ToDictionary(p => p,
+                p => ImageHasher.Similarity(refHash, _group.Hashes[p]));
+        }
+
         var rest = _paths.Skip(1).OrderByDescending(p => _similarities[p]).ToList();
-        _paths = new List<string> { reference };
+        _paths = new List<string> { _paths[0] };
         _paths.AddRange(rest);
 
         RebuildList();

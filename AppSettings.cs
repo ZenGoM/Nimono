@@ -13,6 +13,8 @@ internal sealed class AppSettings
     public int CompareSplitterDistance { get; set; } = 0;
     // パスごとのサムネイル回転回数（1=90°, 2=180°, 3=270°）。0は保存しない
     public Dictionary<string, int> ThumbnailRotations { get; set; } = new();
+    public string SimilarityMethod { get; set; } = "pHash"; // "pHash" or "DINOv2"
+    public string DINOv2ModelPath { get; set; } = "";
 }
 
 internal static class SettingsStorage

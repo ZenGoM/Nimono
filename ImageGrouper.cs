@@ -4,11 +4,14 @@ namespace Nimono;
 
 internal record ImageEntry(string Path, ulong Hash);
 
+internal record EmbeddingEntry(string Path, float[] Embedding);
+
 internal record ImageGroup(
     int Id,
     IReadOnlyList<string> Paths,
     IReadOnlyDictionary<string, double> Similarities,
-    IReadOnlyDictionary<string, ulong> Hashes);
+    IReadOnlyDictionary<string, ulong> Hashes,
+    IReadOnlyDictionary<string, float[]>? Embeddings = null);
 
 internal record GroupingProgress(string Phase, int Current, int Total);
 
@@ -56,6 +59,8 @@ internal static class ImageGrouper
         catch (UnauthorizedAccessException) { }
         catch (IOException) { }
     }
+
+    // ── pHash ─────────────────────────────────────────────────────────
 
     public static IReadOnlyList<ImageEntry> ComputeHashes(
         IReadOnlyList<string> files,
@@ -115,18 +120,13 @@ internal static class ImageGrouper
                 progress?.Report(new GroupingProgress("グルーピング中", processed, n));
         }
 
-        var buckets = new Dictionary<int, List<int>>();
-        for (int i = 0; i < n; i++)
-        {
-            int root = uf.Find(i);
-            if (!buckets.TryGetValue(root, out var list))
-            {
-                list = new List<int>();
-                buckets[root] = list;
-            }
-            list.Add(i);
-        }
+        return BuildHashGroups(entries, uf);
+    }
 
+    private static IReadOnlyList<ImageGroup> BuildHashGroups(
+        IReadOnlyList<ImageEntry> entries, UnionFind uf)
+    {
+        var buckets = BuildBuckets(entries.Count, uf);
         var groups = new List<ImageGroup>();
         int id = 1;
         foreach (var kv in buckets.Where(b => b.Value.Count >= 2)
@@ -144,8 +144,122 @@ internal static class ImageGrouper
                 .ToList();
             groups.Add(new ImageGroup(id++, paths, similarities, hashes));
         }
-
         return groups;
+    }
+
+    // ── DINOv2 ────────────────────────────────────────────────────────
+
+    public static IReadOnlyList<EmbeddingEntry> ComputeEmbeddings(
+        IReadOnlyList<string> files,
+        DINOv2Embedder embedder,
+        IProgress<GroupingProgress>? progress,
+        CancellationToken token)
+    {
+        var entries = new ConcurrentBag<EmbeddingEntry>();
+        int done = 0;
+        int total = files.Count;
+
+        // DINOv2 は重いので並列度を抑える
+        Parallel.ForEach(
+            files,
+            new ParallelOptions
+            {
+                CancellationToken = token,
+                MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount / 2),
+            },
+            file =>
+            {
+                try
+                {
+                    var emb = embedder.Embed(file);
+                    entries.Add(new EmbeddingEntry(file, emb));
+                }
+                catch { }
+                int n = Interlocked.Increment(ref done);
+                if (n % 4 == 0 || n == total)
+                    progress?.Report(new GroupingProgress("特徴量計算中 (DINOv2)", n, total));
+            });
+
+        return entries.ToList();
+    }
+
+    public static IReadOnlyList<ImageGroup> GroupByEmbedding(
+        IReadOnlyList<EmbeddingEntry> entries,
+        double similarityThreshold,
+        IProgress<GroupingProgress>? progress,
+        CancellationToken token)
+    {
+        int n = entries.Count;
+        var uf = new UnionFind(n);
+        float threshold = (float)similarityThreshold;
+
+        int processed = 0;
+        for (int i = 0; i < n; i++)
+        {
+            if (token.IsCancellationRequested) break;
+            var ei = entries[i].Embedding;
+            for (int j = i + 1; j < n; j++)
+            {
+                if (DINOv2Embedder.CosineSimilarity(ei, entries[j].Embedding) >= threshold)
+                    uf.Union(i, j);
+            }
+            processed++;
+            if (processed % 16 == 0 || processed == n)
+                progress?.Report(new GroupingProgress("グルーピング中", processed, n));
+        }
+
+        return BuildEmbeddingGroups(entries, uf);
+    }
+
+    private static IReadOnlyList<ImageGroup> BuildEmbeddingGroups(
+        IReadOnlyList<EmbeddingEntry> entries, UnionFind uf)
+    {
+        var buckets = BuildBuckets(entries.Count, uf);
+        var groups = new List<ImageGroup>();
+        int id = 1;
+        foreach (var kv in buckets.Where(b => b.Value.Count >= 2)
+                                  .OrderByDescending(b => b.Value.Count))
+        {
+            var sortedByPath = kv.Value.OrderBy(i => entries[i].Path).ToList();
+            var refEmb = entries[sortedByPath[0]].Embedding;
+
+            var similarities = new Dictionary<string, double>();
+            foreach (var idx in sortedByPath)
+                similarities[entries[idx].Path] =
+                    DINOv2Embedder.CosineSimilarity(refEmb, entries[idx].Embedding);
+
+            var paths = sortedByPath
+                .OrderByDescending(i => similarities[entries[i].Path])
+                .Select(i => entries[i].Path)
+                .ToList();
+
+            var embeddings = sortedByPath.ToDictionary(
+                i => entries[i].Path, i => entries[i].Embedding);
+
+            groups.Add(new ImageGroup(
+                id++, paths, similarities,
+                new Dictionary<string, ulong>(), // Hashes は DINOv2 では不使用
+                embeddings));
+        }
+        return groups;
+    }
+
+    // ── 共通ユーティリティ ────────────────────────────────────────────
+
+    private static Dictionary<int, List<int>> BuildBuckets(int count, UnionFind uf)
+    {
+        var buckets = new Dictionary<int, List<int>>();
+        for (int i = 0; i < count; i++)
+        {
+            int root = uf.Find(i);
+            if (!buckets.TryGetValue(root, out var list))
+            {
+                list = new List<int>();
+                buckets[root] = list;
+            }
+            list.Add(i);
+        }
+        return buckets;
     }
 
     private sealed class UnionFind
