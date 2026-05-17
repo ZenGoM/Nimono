@@ -20,7 +20,8 @@ internal sealed class CompareForm : Form
     private Bitmap? _rightBitmap;
     private bool _suppressEvent;
     private bool _syncingView;
-    private bool _suppressColumnWidthSave;
+    private bool _loading = true;
+    private static bool s_skipDeleteConfirmation;
     private int _currentRightIndex;
     private List<string> _paths = null!;
     private Dictionary<string, double> _similarities = null!;
@@ -173,25 +174,37 @@ internal sealed class CompareForm : Form
                 try { Clipboard.SetText(_paths[(int)_fileList.SelectedItems[0].Tag!]); } catch { }
         });
         _fileList.ContextMenuStrip = listMenu;
-        _fileList.ColumnWidthChanged += (_, _) => { if (!_suppressColumnWidthSave) PersistSettings(); };
+        _fileList.ColumnWidthChanged += (_, _) => PersistSettings();
 
         _mainSplitter.Panel2.Controls.Add(_fileList);
         Controls.Add(_mainSplitter);
 
         Load += (_, _) =>
         {
-            // スプリッター位置を復元
-            int dist = _settings.CompareSplitterDistance;
-            int h = _mainSplitter.Height;
-            _mainSplitter.SplitterDistance =
-                dist > 80 && dist < h - 60 ? dist : (int)(h * 0.65);
+            // 列幅を先に取得（後続イベントで _settings が上書きされる前に）
+            var savedWidths = _settings.CompareListColumnWidths.ToList();
 
-            // 列幅を復元
-            var widths = _settings.CompareListColumnWidths;
-            _suppressColumnWidthSave = true;
-            for (int i = 0; i < _fileList.Columns.Count && i < widths.Count; i++)
-                _fileList.Columns[i].Width = widths[i];
-            _suppressColumnWidthSave = false;
+            // _loading = true: Load 中の連鎖 PersistSettings を全て抑制
+            _loading = true;
+
+            // スプリッター位置を復元（SplitterMoved → PersistSettings は _loading で抑制）
+            try
+            {
+                int dist = _settings.CompareSplitterDistance;
+                int h = _mainSplitter.Height;
+                _mainSplitter.SplitterDistance =
+                    dist > 80 && dist < h - 60 ? dist : (int)(h * 0.65);
+            }
+            catch { }
+
+            // 列幅は BeginInvoke で初期レイアウト完了後に復元し、その後 _loading を解除
+            // （Load 直後のレイアウトイベントによる ColumnWidthChanged を避けるため）
+            BeginInvoke(() =>
+            {
+                for (int i = 0; i < _fileList.Columns.Count && i < savedWidths.Count; i++)
+                    _fileList.Columns[i].Width = savedWidths[i];
+                _loading = false;
+            });
         };
         ResizeEnd += (_, _) => { _leftView.ResetView(); PersistSettings(); };
         var prevState = WindowState;
@@ -366,7 +379,6 @@ internal sealed class CompareForm : Form
         rtb.Clear();
         var fi = new FileInfo(path);
         double sim = _similarities.TryGetValue(path, out var s) ? s : 0.0;
-        string role = index == 0 ? "【基準】" : $"類似度: {sim:P0}";
         string res = _sizeCache.TryGetValue(path, out var r) ? r : ReadImageSizeText(path);
         string ext = fi.Extension.TrimStart('.').ToUpperInvariant();
         string fileName = Path.GetFileName(path);
@@ -384,8 +396,15 @@ internal sealed class CompareForm : Form
         // Line 1: ファイル名（文字単位diff）
         AppendCharDiff(rtb, fileName, otherFileName);
         AppendColored(rtb, "\n", false);
-        // Line 2: 役割（比較しない）
-        AppendColored(rtb, role + "\n", false);
+        // Line 2: 役割
+        if (index == 0)
+        {
+            AppendColored(rtb, "【基準】\n", false);
+        }
+        else
+        {
+            AppendColored(rtb, $"類似度: {sim:P0}\n", sim < 0.9999);
+        }
         // Line 3: 形式 · サイズ  解像度  日付（フィールド単位diff）
         AppendColored(rtb, ext, otherExt != null && ext != otherExt);
         AppendColored(rtb, " · ", false);
@@ -424,15 +443,31 @@ internal sealed class CompareForm : Form
     private void ExecuteDelete(bool isLeft)
     {
         string path = isLeft ? _paths[0] : _paths[_currentRightIndex];
-        string fileName = Path.GetFileName(path);
 
-        var dlgResult = MessageBox.Show(
-            $"次のファイルをゴミ箱に移動しますか？\n\n{path}",
-            "削除の確認",
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Warning,
-            MessageBoxDefaultButton.Button2);
-        if (dlgResult != DialogResult.Yes) return;
+        if (!s_skipDeleteConfirmation)
+        {
+            var page = new TaskDialogPage()
+            {
+                Caption = "削除の確認",
+                Heading = "次のファイルをゴミ箱に移動しますか？",
+                Text = path,
+                Icon = TaskDialogIcon.Warning,
+                Buttons = { TaskDialogButton.Yes, TaskDialogButton.No },
+                DefaultButton = TaskDialogButton.No,
+                Verification = new TaskDialogVerificationCheckBox()
+                {
+                    Text = "次回以降確認しない"
+                }
+            };
+
+            var dlgResult = TaskDialog.ShowDialog(this, page);
+            if (dlgResult != TaskDialogButton.Yes) return;
+
+            if (page.Verification.Checked)
+            {
+                s_skipDeleteConfirmation = true;
+            }
+        }
 
         try
         {
@@ -604,8 +639,14 @@ internal sealed class CompareForm : Form
 
     private void PersistSettings()
     {
-        _settings.CompareFormWidth = Width;
-        _settings.CompareFormHeight = Height;
+        if (_loading) return;
+
+        if (WindowState == FormWindowState.Normal)
+        {
+            _settings.CompareFormWidth = Width;
+            _settings.CompareFormHeight = Height;
+        }
+
         _settings.CompareSplitterDistance = _mainSplitter.SplitterDistance;
         _settings.CompareListColumnWidths = _fileList.Columns
             .Cast<ColumnHeader>().Select(c => c.Width).ToList();
@@ -631,8 +672,59 @@ internal sealed class CompareForm : Form
         catch { }
     }
 
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (_paths.Count > 1)
+        {
+            int newIndex = _currentRightIndex;
+
+            switch (keyData)
+            {
+                case Keys.Home:
+                    newIndex = 1;
+                    break;
+                case Keys.End:
+                    newIndex = _paths.Count - 1;
+                    break;
+                case Keys.PageUp:
+                case Keys.PageDown:
+                    int pageSize = 10;
+                    try
+                    {
+                        if (_fileList.Items.Count > 0)
+                        {
+                            var rect = _fileList.GetItemRect(0);
+                            if (rect.Height > 0)
+                                pageSize = Math.Max(1, _fileList.ClientSize.Height / rect.Height);
+                        }
+                    }
+                    catch { }
+
+                    if (keyData == Keys.PageUp)
+                        newIndex = Math.Max(1, _currentRightIndex - pageSize);
+                    else
+                        newIndex = Math.Min(_paths.Count - 1, _currentRightIndex + pageSize);
+                    break;
+            }
+
+            if (newIndex != _currentRightIndex && 
+                (keyData == Keys.Home || keyData == Keys.End || keyData == Keys.PageUp || keyData == Keys.PageDown))
+            {
+                SetRightIndex(newIndex);
+                return true;
+            }
+            else if (keyData == Keys.Home || keyData == Keys.End || keyData == Keys.PageUp || keyData == Keys.PageDown)
+            {
+                return true; // Consume the key if it's already at the boundary
+            }
+        }
+
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
+        PersistSettings();
         _leftBitmap?.Dispose();
         _rightBitmap?.Dispose();
         base.OnFormClosing(e);

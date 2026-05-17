@@ -54,6 +54,7 @@ internal sealed class DINOv2Embedder : IDisposable
             var opts = new SessionOptions();
             opts.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
             opts.IntraOpNumThreads = Math.Max(1, Environment.ProcessorCount / 2);
+            try { opts.AppendExecutionProvider_DML(0); } catch { } // GPU (DirectML)、非対応環境は CPU へ
             var session = new InferenceSession(modelPath, opts);
             embedder = new DINOv2Embedder(session);
             return true;

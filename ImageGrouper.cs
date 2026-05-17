@@ -82,8 +82,23 @@ internal static class ImageGrouper
             {
                 try
                 {
-                    var hash = ImageHasher.Compute(file);
-                    entries.Add(new ImageEntry(file, hash));
+                    var fi = new FileInfo(file);
+                    long size = fi.Length;
+                    long ticks = fi.LastWriteTimeUtc.Ticks;
+
+                    if (CacheManager.MemoryCache.TryGetValue(file, out var cache) &&
+                        cache.FileSize == size &&
+                        cache.LastWriteTimeTicks == ticks &&
+                        cache.PHash.HasValue)
+                    {
+                        entries.Add(new ImageEntry(file, cache.PHash.Value));
+                    }
+                    else
+                    {
+                        var hash = ImageHasher.Compute(file);
+                        entries.Add(new ImageEntry(file, hash));
+                        CacheManager.MemoryCache[file] = new CacheEntry(size, ticks, hash, cache?.Embedding);
+                    }
                 }
                 catch { }
                 int n = Interlocked.Increment(ref done);
@@ -171,8 +186,23 @@ internal static class ImageGrouper
             {
                 try
                 {
-                    var emb = embedder.Embed(file);
-                    entries.Add(new EmbeddingEntry(file, emb));
+                    var fi = new FileInfo(file);
+                    long size = fi.Length;
+                    long ticks = fi.LastWriteTimeUtc.Ticks;
+
+                    if (CacheManager.MemoryCache.TryGetValue(file, out var cache) &&
+                        cache.FileSize == size &&
+                        cache.LastWriteTimeTicks == ticks &&
+                        cache.Embedding != null)
+                    {
+                        entries.Add(new EmbeddingEntry(file, cache.Embedding));
+                    }
+                    else
+                    {
+                        var emb = embedder.Embed(file);
+                        entries.Add(new EmbeddingEntry(file, emb));
+                        CacheManager.MemoryCache[file] = new CacheEntry(size, ticks, cache?.PHash, emb);
+                    }
                 }
                 catch { }
                 int n = Interlocked.Increment(ref done);

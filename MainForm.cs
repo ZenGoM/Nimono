@@ -18,6 +18,7 @@ public class MainForm : Form
 
     private Button _selectFoldersButton = null!;
     private Button _scanButton = null!;
+    private Button _clearCacheButton = null!;
     private Button _cancelButton = null!;
     private NumericUpDown _thresholdInput = null!;
     private ComboBox _methodCombo = null!;
@@ -43,6 +44,7 @@ public class MainForm : Form
             SaveSettings();
         }
         _methodCombo.SelectedItem = _settings.SimilarityMethod == "DINOv2" ? "DINOv2（高精度）" : "pHash（高速）";
+        _clearCacheButton.Enabled = CacheManager.HasCacheData();
         Size = new Size(_settings.WindowWidth, _settings.WindowHeight);
         ResizeEnd += (_, _) => { SaveSettings(); RecalculateAllPanelPositions(); };
         var prevState = WindowState;
@@ -102,45 +104,17 @@ public class MainForm : Form
         };
         _scanButton.Click += Scan_Click;
 
-        var thresholdLabel = new Label
-        {
-            Text = "類似度しきい値:",
-            Left = 270,
-            Top = 9,
-            Width = 100,
-            TextAlign = ContentAlignment.MiddleLeft,
-        };
-
-        _thresholdInput = new NumericUpDown
-        {
-            Left = 370,
-            Top = 6,
-            Width = 70,
-            Minimum = 50,
-            Maximum = 100,
-            Value = 85,
-            Increment = 1,
-        };
-        var pctLabel = new Label
-        {
-            Text = "%",
-            Left = 442,
-            Top = 9,
-            Width = 20,
-            TextAlign = ContentAlignment.MiddleLeft,
-        };
-
         var methodLabel = new Label
         {
-            Text = "計算方法:",
-            Left = 472,
+            Text = "計算方式:",
+            Left = 270,
             Top = 9,
-            Width = 70,
+            AutoSize = true,
             TextAlign = ContentAlignment.MiddleLeft,
         };
         _methodCombo = new ComboBox
         {
-            Left = 544,
+            Left = 350,
             Top = 6,
             Width = 140,
             DropDownStyle = ComboBoxStyle.DropDownList,
@@ -155,6 +129,54 @@ public class MainForm : Form
             SaveSettings();
         };
 
+        var thresholdLabel = new Label
+        {
+            Text = "類似度しきい値:",
+            Left = 510,
+            Top = 9,
+            AutoSize = true,
+            TextAlign = ContentAlignment.MiddleLeft,
+        };
+
+        _thresholdInput = new NumericUpDown
+        {
+            Left = 630,
+            Top = 6,
+            Width = 70,
+            Minimum = 50,
+            Maximum = 100,
+            Value = 85,
+            Increment = 1,
+        };
+        var pctLabel = new Label
+        {
+            Text = "%",
+            Left = 702,
+            Top = 9,
+            AutoSize = true,
+            TextAlign = ContentAlignment.MiddleLeft,
+        };
+
+        _clearCacheButton = new Button
+        {
+            Text = "キャッシュクリア",
+            Width = 110,
+            Left = 740,
+            Top = 4,
+            Height = 28,
+            Enabled = false,
+        };
+        _clearCacheButton.Click += (_, _) => 
+        {
+            var dr = MessageBox.Show(this, "キャッシュをクリアしますか？\n（次回のスキャンに時間がかかるようになります）", 
+                "確認", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (dr == DialogResult.Yes)
+            {
+                CacheManager.ClearCache();
+                _clearCacheButton.Enabled = false;
+            }
+        };
+
         _cancelButton = new Button
         {
             Text = "キャンセル",
@@ -166,11 +188,12 @@ public class MainForm : Form
 
         toolPanel.Controls.Add(_selectFoldersButton);
         toolPanel.Controls.Add(_scanButton);
+        toolPanel.Controls.Add(methodLabel);
+        toolPanel.Controls.Add(_methodCombo);
         toolPanel.Controls.Add(thresholdLabel);
         toolPanel.Controls.Add(_thresholdInput);
         toolPanel.Controls.Add(pctLabel);
-        toolPanel.Controls.Add(methodLabel);
-        toolPanel.Controls.Add(_methodCombo);
+        toolPanel.Controls.Add(_clearCacheButton);
         toolPanel.Controls.Add(_cancelButton);
 
         var statusPanel = new Panel
@@ -230,8 +253,13 @@ public class MainForm : Form
     {
         _settings.SearchFolders = _folders.ToList();
         _settings.SimilarityThreshold = (int)_thresholdInput.Value;
-        _settings.WindowWidth = Width;
-        _settings.WindowHeight = Height;
+        
+        if (WindowState == FormWindowState.Normal)
+        {
+            _settings.WindowWidth = Width;
+            _settings.WindowHeight = Height;
+        }
+
         SettingsStorage.Save(_settings);
     }
 
@@ -294,6 +322,9 @@ public class MainForm : Form
                 return;
             }
 
+            _statusLabel.Text = "キャッシュを読み込み中...";
+            await CacheManager.LoadCacheAsync(files);
+
             // 2) 特徴量計算
             _progressBar.Style = ProgressBarStyle.Continuous;
             _progressBar.Value = 0;
@@ -323,6 +354,10 @@ public class MainForm : Form
             }
 
             if (token.IsCancellationRequested) return;
+            
+            _statusLabel.Text = "キャッシュを保存中...";
+            await CacheManager.SaveCacheAsync(files);
+            _clearCacheButton.Enabled = CacheManager.HasCacheData();
 
             // 4) 表示
             RenderGroups(groups);
@@ -418,6 +453,7 @@ public class MainForm : Form
     private void RecalculateAllPanelPositions()
     {
         if (_groups.Count == 0) return;
+        int savedScrollY = Math.Abs(_resultsPanel.AutoScrollPosition.Y);
         int panelWidth = _resultsPanel.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4;
         if (panelWidth < 100) panelWidth = 100;
         int top = 0;
@@ -429,15 +465,26 @@ public class MainForm : Form
             _groupTops[g.Id] = top;
             top += panel.Height + 8;
         }
-        _resultsPanel.AutoScrollMinSize = new Size(0, top + _resultsPanel.Padding.Bottom);
-        int scrollY = -_resultsPanel.AutoScrollPosition.Y;
+        int totalH = top + _resultsPanel.Padding.Bottom;
+
         _resultsPanel.SuspendLayout();
+        _resultsPanel.AutoScroll = false;
+        _resultsPanel.AutoScrollPosition = new Point(0, 0);
+
         foreach (var id in _renderedGroupIds)
         {
             if (_groupPanels.TryGetValue(id, out var p) && _groupTops.TryGetValue(id, out int absTop))
-                p.Top = absTop - scrollY;
+                p.Top = absTop;
         }
-        _resultsPanel.ResumeLayout(false);
+
+        _resultsPanel.AutoScrollMinSize = new Size(0, totalH);
+        _resultsPanel.AutoScroll = true;
+
+        int maxScroll = Math.Max(0, totalH - _resultsPanel.ClientSize.Height);
+        int newScrollY = Math.Min(savedScrollY, maxScroll);
+        _resultsPanel.AutoScrollPosition = new Point(0, Math.Max(0, newScrollY));
+
+        _resultsPanel.ResumeLayout(true);
         UpdateVisibleGroups();
     }
 
@@ -451,6 +498,9 @@ public class MainForm : Form
         if (panelWidth < 100) panelWidth = 100;
         var toAdd = new List<Panel>();
         var toRemove = new List<Panel>();
+
+        _resultsPanel.SuspendLayout();
+
         foreach (var g in _groups)
         {
             if (!_groupTops.TryGetValue(g.Id, out int absTop)) continue;
@@ -458,13 +508,17 @@ public class MainForm : Form
             int absBottom = absTop + panel.Height;
             bool visible = absBottom > scrollY - buffer && absTop < scrollY + viewportH + buffer;
             bool rendered = _renderedGroupIds.Contains(g.Id);
-            if (visible && !rendered)
+
+            if (visible)
             {
-                panel.Left = 0;
-                panel.Width = panelWidth;
                 panel.Top = absTop - scrollY;
-                toAdd.Add(panel);
-                _renderedGroupIds.Add(g.Id);
+                if (!rendered)
+                {
+                    panel.Left = 0;
+                    panel.Width = panelWidth;
+                    toAdd.Add(panel);
+                    _renderedGroupIds.Add(g.Id);
+                }
             }
             else if (!visible && rendered)
             {
@@ -472,13 +526,16 @@ public class MainForm : Form
                 _renderedGroupIds.Remove(g.Id);
             }
         }
-        if (toAdd.Count == 0 && toRemove.Count == 0) return;
-        _resultsPanel.SuspendLayout();
-        foreach (var p in toRemove)
-            _resultsPanel.Controls.Remove(p);
-        foreach (var p in toAdd)
-            _resultsPanel.Controls.Add(p);
-        _resultsPanel.ResumeLayout(false);
+
+        if (toAdd.Count > 0 || toRemove.Count > 0)
+        {
+            foreach (var p in toRemove)
+                _resultsPanel.Controls.Remove(p);
+            foreach (var p in toAdd)
+                _resultsPanel.Controls.Add(p);
+        }
+
+        _resultsPanel.ResumeLayout(true);
     }
 
     private Panel BuildGroupPanel(ImageGroup group)
@@ -791,22 +848,25 @@ public class MainForm : Form
             if (_groupPanels.TryGetValue(g.Id, out var p)) top += p.Height + 8;
         }
         int totalH = top + _resultsPanel.Padding.Bottom;
+
+        _resultsPanel.SuspendLayout();
+        _resultsPanel.AutoScroll = false;
+        _resultsPanel.AutoScrollPosition = new Point(0, 0);
+
+        foreach (var id in _renderedGroupIds)
+        {
+            if (_groupPanels.TryGetValue(id, out var p) && _groupTops.TryGetValue(id, out int absTop))
+                p.Top = absTop;
+        }
+
         _resultsPanel.AutoScrollMinSize = new Size(0, totalH);
+        _resultsPanel.AutoScroll = true;
 
         int maxScroll = Math.Max(0, totalH - _resultsPanel.ClientSize.Height);
         int newScrollY = Math.Min(savedScrollY, maxScroll);
-        if (newScrollY > 0)
-            _resultsPanel.AutoScrollPosition = new Point(0, newScrollY);
+        _resultsPanel.AutoScrollPosition = new Point(0, Math.Max(0, newScrollY));
 
-        // 既に表示中のパネルを新しいトップ座標に移動（UpdateVisibleGroups は新規追加分しか更新しない）
-        int currentScrollY = -_resultsPanel.AutoScrollPosition.Y;
-        foreach (var g in _groups)
-        {
-            if (!_renderedGroupIds.Contains(g.Id)) continue;
-            if (!_groupTops.TryGetValue(g.Id, out int absTop)) continue;
-            if (_groupPanels.TryGetValue(g.Id, out var p))
-                p.Top = absTop - currentScrollY;
-        }
+        _resultsPanel.ResumeLayout(true);
 
         UpdateVisibleGroups();
 
@@ -855,18 +915,26 @@ public class MainForm : Form
             _groupTops[g.Id] = top;
             if (_groupPanels.TryGetValue(g.Id, out var p)) top += p.Height + 8;
         }
-        _resultsPanel.AutoScrollMinSize = new Size(0, top + _resultsPanel.Padding.Bottom);
+        int totalH = top + _resultsPanel.Padding.Bottom;
 
-        _resultsPanel.AutoScrollPosition = new Point(-savedScroll.X, -savedScroll.Y);
-
-        int scrollY = -_resultsPanel.AutoScrollPosition.Y;
         _resultsPanel.SuspendLayout();
+        _resultsPanel.AutoScroll = false;
+        _resultsPanel.AutoScrollPosition = new Point(0, 0);
+
         foreach (var id in _renderedGroupIds)
         {
             if (_groupPanels.TryGetValue(id, out var rp) && _groupTops.TryGetValue(id, out int absTop))
-                rp.Top = absTop - scrollY;
+                rp.Top = absTop;
         }
-        _resultsPanel.ResumeLayout(false);
+
+        _resultsPanel.AutoScrollMinSize = new Size(0, totalH);
+        _resultsPanel.AutoScroll = true;
+
+        int maxScroll = Math.Max(0, totalH - _resultsPanel.ClientSize.Height);
+        int newScrollY = Math.Min(Math.Abs(savedScroll.Y), maxScroll);
+        _resultsPanel.AutoScrollPosition = new Point(0, Math.Max(0, newScrollY));
+
+        _resultsPanel.ResumeLayout(true);
         UpdateVisibleGroups();
     }
 
@@ -943,9 +1011,56 @@ public class MainForm : Form
         base.OnFormClosing(e);
     }
 
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (_thresholdInput.ContainsFocus || _methodCombo.ContainsFocus)
+            return base.ProcessCmdKey(ref msg, keyData);
+
+        if (keyData is Keys.PageUp or Keys.PageDown or Keys.Home or Keys.End)
+        {
+            int currentY = Math.Abs(_resultsPanel.AutoScrollPosition.Y);
+            int maxScroll = Math.Max(0, _resultsPanel.AutoScrollMinSize.Height - _resultsPanel.ClientSize.Height);
+            int pageStep = Math.Max(10, _resultsPanel.ClientSize.Height - 40);
+            int newY = currentY;
+
+            switch (keyData)
+            {
+                case Keys.Home:
+                    newY = 0;
+                    break;
+                case Keys.End:
+                    newY = maxScroll;
+                    break;
+                case Keys.PageUp:
+                    newY = Math.Max(0, currentY - pageStep);
+                    break;
+                case Keys.PageDown:
+                    newY = Math.Min(maxScroll, currentY + pageStep);
+                    break;
+            }
+
+            if (newY != currentY)
+            {
+                _resultsPanel.AutoScrollPosition = new Point(0, newY);
+                UpdateVisibleGroups();
+                return true;
+            }
+            return true;
+        }
+
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
     private sealed class VirtualScrollPanel : Panel
     {
         public event EventHandler? Scrolled;
+
+        protected override Point ScrollToControl(Control activeControl)
+        {
+            // WinFormsがフォーカスされたコントロールに合わせて勝手にスクロールするのを防ぐ。
+            // これにより、仮想スクロールでコントロールが追加・削除された際のガタつき（元の位置に戻る等）を完全に防止する。
+            return DisplayRectangle.Location;
+        }
 
         protected override void WndProc(ref Message m)
         {
