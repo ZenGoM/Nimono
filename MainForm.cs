@@ -45,6 +45,13 @@ public class MainForm : Form
         _methodCombo.SelectedItem = _settings.SimilarityMethod == "DINOv2" ? "DINOv2（高精度）" : "pHash（高速）";
         Size = new Size(_settings.WindowWidth, _settings.WindowHeight);
         ResizeEnd += (_, _) => { SaveSettings(); RecalculateAllPanelPositions(); };
+        var prevState = WindowState;
+        SizeChanged += (_, _) =>
+        {
+            if (WindowState == prevState) return;
+            prevState = WindowState;
+            RecalculateAllPanelPositions();
+        };
         FormClosed += (_, _) => { _embedder?.Dispose(); _cts?.Cancel(); };
         if (_folders.Count > 0)
         {
