@@ -62,12 +62,13 @@ internal static class ImageGrouper
 
     // ── pHash ─────────────────────────────────────────────────────────
 
-    public static IReadOnlyList<ImageEntry> ComputeHashes(
+    public static (IReadOnlyList<ImageEntry> Entries, IReadOnlyList<string> NewPaths) ComputeHashes(
         IReadOnlyList<string> files,
         IProgress<GroupingProgress>? progress,
         CancellationToken token)
     {
         var entries = new ConcurrentBag<ImageEntry>();
+        var newPaths = new ConcurrentBag<string>();
         int done = 0;
         int total = files.Count;
 
@@ -98,6 +99,7 @@ internal static class ImageGrouper
                         var hash = ImageHasher.Compute(file);
                         entries.Add(new ImageEntry(file, hash));
                         CacheManager.MemoryCache[file] = new CacheEntry(size, ticks, hash, cache?.Embedding);
+                        newPaths.Add(file);
                     }
                 }
                 catch { }
@@ -106,7 +108,7 @@ internal static class ImageGrouper
                     progress?.Report(new GroupingProgress("ハッシュ計算中", n, total));
             });
 
-        return entries.ToList();
+        return (entries.ToList(), newPaths.ToList());
     }
 
     public static IReadOnlyList<ImageGroup> Group(
@@ -116,24 +118,35 @@ internal static class ImageGrouper
         CancellationToken token)
     {
         int n = entries.Count;
-        var uf = new UnionFind(n);
-        // 64bit ハッシュなので、距離 = 64 * (1 - sim)
         int maxDistance = (int)Math.Floor(64 * (1.0 - similarityThreshold));
-
         int processed = 0;
-        for (int i = 0; i < n; i++)
-        {
-            if (token.IsCancellationRequested) break;
-            var hi = entries[i].Hash;
-            for (int j = i + 1; j < n; j++)
+
+        // 並列フェーズ: 一致ペアをスレッドローカルリストに収集
+        var allEdges = new List<List<(int, int)>>();
+        object edgeLock = new();
+
+        Parallel.For(0, n,
+            new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) },
+            () => new List<(int, int)>(),
+            (i, state, localEdges) =>
             {
-                if (ImageHasher.HammingDistance(hi, entries[j].Hash) <= maxDistance)
-                    uf.Union(i, j);
-            }
-            processed++;
-            if (processed % 16 == 0 || processed == n)
-                progress?.Report(new GroupingProgress("グルーピング中", processed, n));
-        }
+                if (token.IsCancellationRequested) { state.Stop(); return localEdges; }
+                var hi = entries[i].Hash;
+                for (int j = i + 1; j < n; j++)
+                    if (ImageHasher.HammingDistance(hi, entries[j].Hash) <= maxDistance)
+                        localEdges.Add((i, j));
+                int p = Interlocked.Increment(ref processed);
+                if (p % 16 == 0 || p == n)
+                    progress?.Report(new GroupingProgress("グルーピング中", p, n));
+                return localEdges;
+            },
+            localEdges => { lock (edgeLock) allEdges.Add(localEdges); });
+
+        // シリアルフェーズ: Union-Find にエッジを適用
+        var uf = new UnionFind(n);
+        foreach (var list in allEdges)
+            foreach (var (a, b) in list)
+                uf.Union(a, b);
 
         return BuildHashGroups(entries, uf);
     }
@@ -164,13 +177,14 @@ internal static class ImageGrouper
 
     // ── DINOv2 ────────────────────────────────────────────────────────
 
-    public static IReadOnlyList<EmbeddingEntry> ComputeEmbeddings(
+    public static (IReadOnlyList<EmbeddingEntry> Entries, IReadOnlyList<string> NewPaths) ComputeEmbeddings(
         IReadOnlyList<string> files,
         DINOv2Embedder embedder,
         IProgress<GroupingProgress>? progress,
         CancellationToken token)
     {
         var entries = new ConcurrentBag<EmbeddingEntry>();
+        var newPaths = new ConcurrentBag<string>();
         int done = 0;
         int total = files.Count;
 
@@ -202,6 +216,7 @@ internal static class ImageGrouper
                         var emb = embedder.Embed(file);
                         entries.Add(new EmbeddingEntry(file, emb));
                         CacheManager.MemoryCache[file] = new CacheEntry(size, ticks, cache?.PHash, emb);
+                        newPaths.Add(file);
                     }
                 }
                 catch { }
@@ -210,7 +225,7 @@ internal static class ImageGrouper
                     progress?.Report(new GroupingProgress("特徴量計算中 (DINOv2)", n, total));
             });
 
-        return entries.ToList();
+        return (entries.ToList(), newPaths.ToList());
     }
 
     public static IReadOnlyList<ImageGroup> GroupByEmbedding(
@@ -220,23 +235,35 @@ internal static class ImageGrouper
         CancellationToken token)
     {
         int n = entries.Count;
-        var uf = new UnionFind(n);
         float threshold = (float)similarityThreshold;
-
         int processed = 0;
-        for (int i = 0; i < n; i++)
-        {
-            if (token.IsCancellationRequested) break;
-            var ei = entries[i].Embedding;
-            for (int j = i + 1; j < n; j++)
+
+        // 並列フェーズ: 一致ペアをスレッドローカルリストに収集
+        var allEdges = new List<List<(int, int)>>();
+        object edgeLock = new();
+
+        Parallel.For(0, n,
+            new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) },
+            () => new List<(int, int)>(),
+            (i, state, localEdges) =>
             {
-                if (DINOv2Embedder.CosineSimilarity(ei, entries[j].Embedding) >= threshold)
-                    uf.Union(i, j);
-            }
-            processed++;
-            if (processed % 16 == 0 || processed == n)
-                progress?.Report(new GroupingProgress("グルーピング中", processed, n));
-        }
+                if (token.IsCancellationRequested) { state.Stop(); return localEdges; }
+                var ei = entries[i].Embedding;
+                for (int j = i + 1; j < n; j++)
+                    if (DINOv2Embedder.CosineSimilarity(ei, entries[j].Embedding) >= threshold)
+                        localEdges.Add((i, j));
+                int p = Interlocked.Increment(ref processed);
+                if (p % 16 == 0 || p == n)
+                    progress?.Report(new GroupingProgress("グルーピング中", p, n));
+                return localEdges;
+            },
+            localEdges => { lock (edgeLock) allEdges.Add(localEdges); });
+
+        // シリアルフェーズ: Union-Find にエッジを適用
+        var uf = new UnionFind(n);
+        foreach (var list in allEdges)
+            foreach (var (a, b) in list)
+                uf.Union(a, b);
 
         return BuildEmbeddingGroups(entries, uf);
     }

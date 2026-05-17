@@ -24,6 +24,7 @@ internal static class CacheManager
         Directory.CreateDirectory(DbFolder);
         using var connection = new SqliteConnection(ConnectionString);
         connection.Open();
+        ApplyPragmas(connection);
 
         using var command = connection.CreateCommand();
         command.CommandText = @"
@@ -36,6 +37,15 @@ internal static class CacheManager
             )
         ";
         command.ExecuteNonQuery();
+    }
+
+    private static void ApplyPragmas(SqliteConnection connection)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "PRAGMA journal_mode=WAL";
+        cmd.ExecuteScalar();
+        cmd.CommandText = "PRAGMA synchronous=NORMAL";
+        cmd.ExecuteNonQuery();
     }
 
     public static bool HasCacheData()
@@ -53,6 +63,19 @@ internal static class CacheManager
         catch
         {
             return false;
+        }
+    }
+
+    public static long GetCacheSize()
+    {
+        try
+        {
+            if (!File.Exists(DbPath)) return 0;
+            return new FileInfo(DbPath).Length;
+        }
+        catch
+        {
+            return 0;
         }
     }
 
@@ -144,6 +167,7 @@ internal static class CacheManager
 
                 using var connection = new SqliteConnection(ConnectionString);
                 connection.Open();
+                ApplyPragmas(connection);
                 using var transaction = connection.BeginTransaction();
 
                 using var command = connection.CreateCommand();

@@ -12,6 +12,7 @@ public class MainForm : Form
     private readonly Dictionary<int, FlowLayoutPanel> _groupFlows = new();
     private readonly Dictionary<int, Panel> _groupPanels = new();
     private readonly Dictionary<int, int> _groupTops = new();
+    private readonly Dictionary<int, int> _groupHeightCache = new();
     private readonly HashSet<int> _renderedGroupIds = new();
     private CancellationTokenSource? _cts;
     private AppSettings _settings = null!;
@@ -43,8 +44,13 @@ public class MainForm : Form
             _settings.DINOv2ModelPath = bundledModel;
             SaveSettings();
         }
-        _methodCombo.SelectedItem = _settings.SimilarityMethod == "DINOv2" ? "DINOv2（高精度）" : "pHash（高速）";
-        _clearCacheButton.Enabled = CacheManager.HasCacheData();
+        _methodCombo.SelectedItem = _settings.SimilarityMethod switch
+        {
+            "DINOv2_CUDA" => "DINOv2 CUDA",
+            "DINOv2"      => "DINOv2 CPU",
+            _             => "pHash（高速）",
+        };
+        UpdateClearCacheButton();
         Size = new Size(_settings.WindowWidth, _settings.WindowHeight);
         ResizeEnd += (_, _) => { SaveSettings(); RecalculateAllPanelPositions(); };
         var prevState = WindowState;
@@ -119,13 +125,19 @@ public class MainForm : Form
             Width = 140,
             DropDownStyle = ComboBoxStyle.DropDownList,
         };
-        _methodCombo.Items.AddRange(["pHash（高速）", "DINOv2（高精度）"]);
+        _methodCombo.Items.AddRange(["pHash（高速）", "DINOv2 CPU", "DINOv2 CUDA"]);
         _methodCombo.SelectedIndex = 0;
         _methodCombo.SelectedIndexChanged += (_, _) =>
         {
-            bool isDINOv2 = _methodCombo.SelectedIndex == 1;
-            _settings.SimilarityMethod = isDINOv2 ? "DINOv2" : "pHash";
-            if (!isDINOv2) { _embedder?.Dispose(); _embedder = null; }
+            string newMethod = _methodCombo.SelectedIndex switch
+            {
+                1 => "DINOv2",
+                2 => "DINOv2_CUDA",
+                _ => "pHash",
+            };
+            bool epChanged = _settings.SimilarityMethod != newMethod;
+            _settings.SimilarityMethod = newMethod;
+            if (epChanged) { _embedder?.Dispose(); _embedder = null; }
             SaveSettings();
         };
 
@@ -160,7 +172,7 @@ public class MainForm : Form
         _clearCacheButton = new Button
         {
             Text = "キャッシュクリア",
-            Width = 110,
+            Width = 200,
             Left = 740,
             Top = 4,
             Height = 28,
@@ -173,7 +185,7 @@ public class MainForm : Form
             if (dr == DialogResult.Yes)
             {
                 CacheManager.ClearCache();
-                _clearCacheButton.Enabled = false;
+                UpdateClearCacheButton();
             }
         };
 
@@ -264,11 +276,20 @@ public class MainForm : Form
     }
 
 
+    private static readonly string ScanLogPath =
+        Path.Combine(AppContext.BaseDirectory, "scan.log");
+
+    private static void Log(string msg)
+    {
+        try { File.AppendAllText(ScanLogPath, $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\n"); } catch { }
+    }
+
     private async void Scan_Click(object? sender, EventArgs e)
     {
         if (_folders.Count == 0) return;
 
-        bool isDINOv2 = _settings.SimilarityMethod == "DINOv2";
+        bool isDINOv2 = _settings.SimilarityMethod is "DINOv2" or "DINOv2_CUDA";
+        bool useCuda  = _settings.SimilarityMethod == "DINOv2_CUDA";
 
         // DINOv2 の場合はモデルが必要
         if (isDINOv2)
@@ -284,13 +305,20 @@ public class MainForm : Form
             }
             if (_embedder is null)
             {
-                if (!DINOv2Embedder.TryCreate(_settings.DINOv2ModelPath, out var emb, out string err))
+                if (!DINOv2Embedder.TryCreate(_settings.DINOv2ModelPath, useCuda, out var emb, out string err, out bool cudaFallback))
                 {
                     MessageBox.Show(this, $"モデルの読み込みに失敗しました。\n\n{err}",
                         "DINOv2 エラー", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
                 _embedder = emb;
+                if (cudaFallback)
+                {
+                    MessageBox.Show(this,
+                        "CUDA の初期化に失敗したため、CPU モードで実行します。\n\n" +
+                        "GPU を使用するには、NVIDIA GPU と対応する CUDA ランタイムが必要です。",
+                        "DINOv2 — CPU フォールバック", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
             }
         }
 
@@ -309,6 +337,7 @@ public class MainForm : Form
         try
         {
             // 1) ファイル列挙
+            File.WriteAllText(ScanLogPath, $"[{DateTime.Now:HH:mm:ss.fff}] スキャン開始 mode={( isDINOv2 ? "DINOv2" : "pHash")}\n");
             _statusLabel.Text = "ファイルを列挙中...";
             _progressBar.Style = ProgressBarStyle.Marquee;
             var files = await Task.Run(
@@ -322,45 +351,61 @@ public class MainForm : Form
                 return;
             }
 
+            Log($"ファイル列挙完了: {files.Count}件");
+
             _statusLabel.Text = "キャッシュを読み込み中...";
+            Log("キャッシュ読み込み開始");
             await CacheManager.LoadCacheAsync(files);
+            Log("キャッシュ読み込み完了");
 
             // 2) 特徴量計算
             _progressBar.Style = ProgressBarStyle.Continuous;
             _progressBar.Value = 0;
 
             IReadOnlyList<ImageGroup> groups;
+            IReadOnlyList<string> newPaths;
             if (isDINOv2 && _embedder is not null)
             {
-                var embeddings = await Task.Run(
+                Log("DINOv2埋め込み計算開始");
+                var (embeddings, embNewPaths) = await Task.Run(
                     () => ImageGrouper.ComputeEmbeddings(files, _embedder, progress, token), token);
+                newPaths = embNewPaths;
+                Log($"DINOv2埋め込み計算完了: {embeddings.Count}件");
 
                 if (token.IsCancellationRequested) return;
 
-                // 3) グルーピング（コサイン類似度）
+                Log("DINOv2グルーピング開始");
                 groups = await Task.Run(
                     () => ImageGrouper.GroupByEmbedding(embeddings, threshold, progress, token), token);
+                Log($"DINOv2グルーピング完了: {groups.Count}グループ");
             }
             else
             {
-                var entries = await Task.Run(
+                Log("pHashハッシュ計算開始");
+                var (entries, hashNewPaths) = await Task.Run(
                     () => ImageGrouper.ComputeHashes(files, progress, token), token);
+                newPaths = hashNewPaths;
+                Log($"pHashハッシュ計算完了: {entries.Count}件");
 
                 if (token.IsCancellationRequested) return;
 
-                // 3) グルーピング（ハミング距離）
+                Log("pHashグルーピング開始");
                 groups = await Task.Run(
                     () => ImageGrouper.Group(entries, threshold, progress, token), token);
+                Log($"pHashグルーピング完了: {groups.Count}グループ");
             }
 
             if (token.IsCancellationRequested) return;
-            
+
+            Log("キャッシュ保存開始");
             _statusLabel.Text = "キャッシュを保存中...";
-            await CacheManager.SaveCacheAsync(files);
-            _clearCacheButton.Enabled = CacheManager.HasCacheData();
+            await CacheManager.SaveCacheAsync(newPaths);
+            Log("キャッシュ保存完了");
 
             // 4) 表示
+            Log("結果表示開始");
             RenderGroups(groups);
+            Log("結果表示完了");
 
             int dupes = groups.Sum(g => g.Paths.Count);
             _statusLabel.Text = groups.Count == 0
@@ -370,10 +415,12 @@ public class MainForm : Form
         catch (OperationCanceledException)
         {
             _statusLabel.Text = "キャンセルされました";
+            Log("キャンセル");
         }
         catch (Exception ex)
         {
             _statusLabel.Text = $"エラー: {ex.Message}";
+            Log($"例外: {ex}");
         }
         finally
         {
@@ -398,6 +445,14 @@ public class MainForm : Form
         _thresholdInput.Enabled = !scanning;
         _methodCombo.Enabled = !scanning;
         _cancelButton.Enabled = scanning;
+        if (scanning)
+        {
+            _clearCacheButton.Enabled = false;
+        }
+        else
+        {
+            UpdateClearCacheButton();
+        }
         if (!scanning)
         {
             _progressBar.Style = ProgressBarStyle.Continuous;
@@ -418,6 +473,7 @@ public class MainForm : Form
         _groupFlows.Clear();
         _groupPanels.Clear();
         _groupTops.Clear();
+        _groupHeightCache.Clear();
         _renderedGroupIds.Clear();
         _resultsPanel.AutoScrollMinSize = Size.Empty;
         _resultsPanel.AutoScrollPosition = new Point(0, 0);
@@ -429,17 +485,60 @@ public class MainForm : Form
         _groups.AddRange(groups);
         int panelWidth = _resultsPanel.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4;
         if (panelWidth < 100) panelWidth = 100;
+        // パネルは生成せず、高さを推定してスクロール領域だけ確保する
+        // 実際のパネル生成は UpdateVisibleGroups で可視域に入った時に行う
         int top = 0;
         foreach (var group in groups)
         {
-            var panel = BuildGroupPanel(group);
-            panel.Width = panelWidth;
-            SetGroupPanelHeight(panel, group.Id);
+            int height = EstimateGroupHeight(group.Paths.Count, panelWidth);
+            _groupHeightCache[group.Id] = height;
             _groupTops[group.Id] = top;
-            top += panel.Height + 8;
+            top += height + 8;
         }
         _resultsPanel.AutoScrollMinSize = new Size(0, top + _resultsPanel.Padding.Bottom);
         UpdateVisibleGroups();
+    }
+
+    /// <summary>
+    /// サムネイルの個数とパネル幅からグループパネルの高さを推定する。
+    /// 実際にパネルを構築しないため高速だが、あくまで推定値。
+    /// </summary>
+    private static int EstimateGroupHeight(int pathCount, int panelWidth)
+    {
+        const int headerHeight = 28;
+        const int wrapOuterWidth = ThumbnailSize + 8 + 8;  // wrap幅 + 左右マージン
+        const int wrapOuterHeight = 250;                    // 推定wrap高さ
+        const int flowPadding = 12;                         // FlowLayoutPanel上下パディング
+        int flowInnerWidth = Math.Max(1, panelWidth - 2 - flowPadding);
+        int itemsPerRow = Math.Max(1, flowInnerWidth / wrapOuterWidth);
+        int rows = (pathCount + itemsPerRow - 1) / itemsPerRow;
+        return headerHeight + rows * wrapOuterHeight + flowPadding + 2;
+    }
+
+    /// <summary>
+    /// 指定グループのパネルを破棄し、サムネイルのメモリを解放する。
+    /// 実測高さを _groupHeightCache に保存してから破棄する。
+    /// </summary>
+    private void DisposeGroupPanel(int groupId)
+    {
+        if (_groupFlows.TryGetValue(groupId, out var flow))
+            foreach (Control c in flow.Controls)
+                if (c is Panel wrap)
+                    foreach (Control inner in wrap.Controls)
+                        if (inner is PictureBox pb && pb.Image is Bitmap bmp)
+                        {
+                            _allocatedThumbnails.Remove(bmp);
+                            bmp.Dispose();
+                        }
+        if (_groupPanels.TryGetValue(groupId, out var panel))
+        {
+            _groupHeightCache[groupId] = panel.Height; // 実測高さを保存
+            _resultsPanel.Controls.Remove(panel);
+            panel.Dispose();
+            _renderedGroupIds.Remove(groupId);
+        }
+        _groupPanels.Remove(groupId);
+        _groupFlows.Remove(groupId);
     }
 
     private void SetGroupPanelHeight(Panel panel, int groupId)
@@ -459,11 +558,21 @@ public class MainForm : Form
         int top = 0;
         foreach (var g in _groups)
         {
-            if (!_groupPanels.TryGetValue(g.Id, out var panel)) continue;
-            panel.Width = panelWidth;
-            SetGroupPanelHeight(panel, g.Id);
+            int height;
+            if (_groupPanels.TryGetValue(g.Id, out var panel))
+            {
+                panel.Width = panelWidth;
+                SetGroupPanelHeight(panel, g.Id);
+                height = panel.Height;
+            }
+            else
+            {
+                // 未構築パネルは推定高さを使用
+                height = EstimateGroupHeight(g.Paths.Count, panelWidth);
+                _groupHeightCache[g.Id] = height;
+            }
             _groupTops[g.Id] = top;
-            top += panel.Height + 8;
+            top += height + 8;
         }
         int totalH = top + _resultsPanel.Padding.Bottom;
 
@@ -494,48 +603,123 @@ public class MainForm : Form
         int scrollY = -_resultsPanel.AutoScrollPosition.Y;
         int viewportH = _resultsPanel.ClientSize.Height;
         int buffer = Math.Max(viewportH, 300);
+        int disposeBuffer = buffer * 3; // この範囲外のパネルはメモリ解放
         int panelWidth = _resultsPanel.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4;
         if (panelWidth < 100) panelWidth = 100;
         var toAdd = new List<Panel>();
-        var toRemove = new List<Panel>();
+        var toRemove = new List<int>();
+        var toDispose = new List<int>();
+        bool needRecalc = false;
 
         _resultsPanel.SuspendLayout();
 
         foreach (var g in _groups)
         {
             if (!_groupTops.TryGetValue(g.Id, out int absTop)) continue;
-            if (!_groupPanels.TryGetValue(g.Id, out var panel)) continue;
-            int absBottom = absTop + panel.Height;
-            bool visible = absBottom > scrollY - buffer && absTop < scrollY + viewportH + buffer;
-            bool rendered = _renderedGroupIds.Contains(g.Id);
 
-            if (visible)
+            // パネルが構築済みなら実測高さ、未構築なら推定高さを使用
+            int height = _groupPanels.TryGetValue(g.Id, out var panel)
+                ? panel.Height
+                : (_groupHeightCache.TryGetValue(g.Id, out var ch) ? ch : 250);
+            int absBottom = absTop + height;
+            bool inView = absBottom > scrollY - buffer && absTop < scrollY + viewportH + buffer;
+            bool rendered = _renderedGroupIds.Contains(g.Id);
+            bool built = panel != null;
+
+            if (inView)
             {
-                panel.Top = absTop - scrollY;
-                if (!rendered)
+                if (!built)
                 {
+                    // 可視域に入ったので初めてパネルを構築する
+                    panel = BuildGroupPanel(g);
+                    panel.Width = panelWidth;
+                    SetGroupPanelHeight(panel, g.Id);
+                    // 実測高さが推定と異なる場合、後で位置を再計算
+                    if (panel.Height != height)
+                    {
+                        _groupHeightCache[g.Id] = panel.Height;
+                        needRecalc = true;
+                    }
+                    panel.Top = absTop - scrollY;
+                    panel.Left = 0;
+                    toAdd.Add(panel);
+                    _renderedGroupIds.Add(g.Id);
+                }
+                else if (!rendered)
+                {
+                    panel!.Top = absTop - scrollY;
                     panel.Left = 0;
                     panel.Width = panelWidth;
                     toAdd.Add(panel);
                     _renderedGroupIds.Add(g.Id);
                 }
+                else
+                {
+                    panel!.Top = absTop - scrollY;
+                }
             }
-            else if (!visible && rendered)
+            else
             {
-                toRemove.Add(panel);
-                _renderedGroupIds.Remove(g.Id);
+                if (rendered)
+                {
+                    toRemove.Add(g.Id);
+                }
+                // 可視域から大きく離れたパネルはメモリ解放
+                if (built && (absBottom < scrollY - disposeBuffer || absTop > scrollY + viewportH + disposeBuffer))
+                {
+                    toDispose.Add(g.Id);
+                }
             }
         }
 
-        if (toAdd.Count > 0 || toRemove.Count > 0)
+        // Controls の追加・削除
+        foreach (var id in toRemove)
         {
-            foreach (var p in toRemove)
+            if (_groupPanels.TryGetValue(id, out var p))
                 _resultsPanel.Controls.Remove(p);
-            foreach (var p in toAdd)
-                _resultsPanel.Controls.Add(p);
+            _renderedGroupIds.Remove(id);
+        }
+        foreach (var p in toAdd)
+            _resultsPanel.Controls.Add(p);
+
+        // 実測高さと推定高さが異なった場合、全体の位置を再計算し表示中パネルを再配置
+        // (レイアウト再開前に行うことで描画の破綻や座標ズレを防ぐ)
+        if (needRecalc)
+        {
+            RecalculateGroupPositions();
+            int scrollY2 = -_resultsPanel.AutoScrollPosition.Y;
+            foreach (var id in _renderedGroupIds)
+            {
+                if (_groupPanels.TryGetValue(id, out var rp) && _groupTops.TryGetValue(id, out int newTop))
+                    rp.Top = newTop - scrollY2;
+            }
         }
 
         _resultsPanel.ResumeLayout(true);
+
+        // 遠くなったパネルを破棄してメモリを解放
+        foreach (var id in toDispose)
+            DisposeGroupPanel(id);
+    }
+
+    /// <summary>
+    /// グループの top 座標と AutoScrollMinSize を再計算する（パネルの再配置なし）。
+    /// </summary>
+    private void RecalculateGroupPositions()
+    {
+        int panelWidth = _resultsPanel.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4;
+        if (panelWidth < 100) panelWidth = 100;
+        int top = 0;
+        foreach (var g in _groups)
+        {
+            _groupTops[g.Id] = top;
+            int height = _groupPanels.TryGetValue(g.Id, out var panel)
+                ? panel.Height
+                : (_groupHeightCache.TryGetValue(g.Id, out var ch) ? ch
+                    : EstimateGroupHeight(g.Paths.Count, panelWidth));
+            top += height + 8;
+        }
+        _resultsPanel.AutoScrollMinSize = new Size(0, top + _resultsPanel.Padding.Bottom);
     }
 
     private Panel BuildGroupPanel(ImageGroup group)
@@ -631,13 +815,14 @@ public class MainForm : Form
             ? $"{originalSize.Width}×{originalSize.Height}"
             : "—";
         string dateText = fi.LastWriteTime.ToString("yyyy/MM/dd");
-        string relativePath = GetRelativePath(path);
+        // ファイル名を除いたディレクトリパスのみ表示（比較画面と統一）
+        string dirPath = Path.GetDirectoryName(path) ?? path;
 
         const int SimLabelHeight = 16;
         const int PicTop = 4 + SimLabelHeight;
 
         var infoFont = new Font("Segoe UI", 7.5f);
-        string infoText = $"{formatText} · {sizeText}\n{resText}\n{dateText}\n{relativePath}";
+        string infoText = $"{formatText} · {sizeText}\n{resText}\n{dateText}\n{dirPath}";
         int infoHeight = TextRenderer.MeasureText(
             infoText, infoFont, new Size(ThumbnailSize, int.MaxValue),
             TextFormatFlags.WordBreak).Height + 2;
@@ -819,33 +1004,23 @@ public class MainForm : Form
         var groupId = _groups[groupIdx].Id;
         _groups.RemoveAt(groupIdx);
 
-        // ビットマップを解放してからパネルを破棄
-        if (_groupFlows.TryGetValue(groupId, out var flow))
-            foreach (Control c in flow.Controls)
-                if (c is Panel wrap)
-                    foreach (Control inner in wrap.Controls)
-                        if (inner is PictureBox pb && pb.Image is Bitmap bmp)
-                        {
-                            _allocatedThumbnails.Remove(bmp);
-                            bmp.Dispose();
-                        }
-
-        if (_groupPanels.TryGetValue(groupId, out var panel))
-        {
-            _resultsPanel.Controls.Remove(panel);
-            panel.Dispose();
-            _renderedGroupIds.Remove(groupId);
-        }
-        _groupPanels.Remove(groupId);
-        _groupFlows.Remove(groupId);
+        // パネルが構築済みなら破棄
+        DisposeGroupPanel(groupId);
         _groupTops.Remove(groupId);
+        _groupHeightCache.Remove(groupId);
 
         // 残グループのトップ座標を先頭から再計算
+        int panelWidth = _resultsPanel.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4;
+        if (panelWidth < 100) panelWidth = 100;
         int top = 0;
         foreach (var g in _groups)
         {
             _groupTops[g.Id] = top;
-            if (_groupPanels.TryGetValue(g.Id, out var p)) top += p.Height + 8;
+            int height = _groupPanels.TryGetValue(g.Id, out var p)
+                ? p.Height
+                : (_groupHeightCache.TryGetValue(g.Id, out var ch) ? ch
+                    : EstimateGroupHeight(g.Paths.Count, panelWidth));
+            top += height + 8;
         }
         int totalH = top + _resultsPanel.Padding.Bottom;
 
@@ -938,14 +1113,20 @@ public class MainForm : Form
         UpdateVisibleGroups();
     }
 
-    private string GetRelativePath(string filePath)
+    private void UpdateClearCacheButton()
     {
-        foreach (var folder in _folders)
+        bool hasCache = CacheManager.HasCacheData();
+        _clearCacheButton.Enabled = hasCache;
+        if (hasCache)
         {
-            if (filePath.StartsWith(folder, StringComparison.OrdinalIgnoreCase))
-                return filePath.Substring(folder.Length).TrimStart(Path.DirectorySeparatorChar);
+            long sizeBytes = CacheManager.GetCacheSize();
+            string sizeText = FormatFileSize(sizeBytes);
+            _clearCacheButton.Text = $"キャッシュクリア ({sizeText})";
         }
-        return filePath;
+        else
+        {
+            _clearCacheButton.Text = "キャッシュクリア";
+        }
     }
 
     private static string FormatFileSize(long bytes) => bytes switch
@@ -959,8 +1140,7 @@ public class MainForm : Form
     {
         try
         {
-            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-            using var src = Image.FromStream(fs, useEmbeddedColorManagement: false, validateImageData: false);
+            using var src = Image.FromFile(path);
 
             var originalSize = new Size(src.Width, src.Height);
 
@@ -971,11 +1151,10 @@ public class MainForm : Form
             if (w < 1) w = 1;
             if (h < 1) h = 1;
 
-            var bmp = new Bitmap(w, h);
-            using var g = Graphics.FromImage(bmp);
-            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-            g.DrawImage(src, 0, 0, w, h);
-            return (bmp, originalSize);
+            // GetThumbnailImage reads the embedded Exif thumbnail for JPEG (fast path);
+            // falls back to full-image resize for PNG/BMP/etc.
+            using var thumb = src.GetThumbnailImage(w, h, () => false, IntPtr.Zero);
+            return (new Bitmap(thumb), originalSize);
         }
         catch
         {

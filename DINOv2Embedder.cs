@@ -44,17 +44,24 @@ internal sealed class DINOv2Embedder : IDisposable
 
     public static bool TryCreate(
         string modelPath,
+        bool useCuda,
         [NotNullWhen(true)] out DINOv2Embedder? embedder,
-        out string error)
+        out string error,
+        out bool cudaFallback)
     {
         embedder = null;
         error = "";
+        cudaFallback = false;
         try
         {
             var opts = new SessionOptions();
             opts.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
             opts.IntraOpNumThreads = Math.Max(1, Environment.ProcessorCount / 2);
-            try { opts.AppendExecutionProvider_DML(0); } catch { } // GPU (DirectML)、非対応環境は CPU へ
+            if (useCuda)
+            {
+                try { opts.AppendExecutionProvider_CUDA(0); }
+                catch { cudaFallback = true; } // CUDA が使用できないため CPU にフォールバック
+            }
             var session = new InferenceSession(modelPath, opts);
             embedder = new DINOv2Embedder(session);
             return true;

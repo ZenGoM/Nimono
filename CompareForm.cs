@@ -133,7 +133,7 @@ internal sealed class CompareForm : Form
         _fileList.Columns.Add("サイズ", 80);
         _fileList.Columns.Add("解像度", 100);
         _fileList.Columns.Add("日付", 90);
-        _fileList.Columns.Add("フルパス", 300);
+        _fileList.Columns.Add("パス", 300);
         _fileList.SelectedIndexChanged += (_, _) =>
         {
             if (_suppressEvent || _fileList.SelectedItems.Count == 0) return;
@@ -332,7 +332,7 @@ internal sealed class CompareForm : Form
                 item.SubItems.Add(FormatFileSize(fi.Length));
                 item.SubItems.Add(sizeText);
                 item.SubItems.Add(fi.LastWriteTime.ToString("yyyy/MM/dd"));
-                item.SubItems.Add(path);
+                item.SubItems.Add(Path.GetDirectoryName(path) ?? path);
                 _fileList.Items.Add(item);
             }
             catch { }
@@ -413,8 +413,10 @@ internal sealed class CompareForm : Form
         AppendColored(rtb, res, otherRes != null && res != otherRes);
         AppendColored(rtb, "  ", false);
         AppendColored(rtb, dateText + "\n", otherDate != null && dateText != otherDate);
-        // Line 4: フルパス（文字単位diff）
-        AppendCharDiff(rtb, path, otherPath);
+        // Line 4: ディレクトリパス（ファイル名を除く、文字単位diff）
+        string dirPath = Path.GetDirectoryName(path) ?? path;
+        string? otherDirPath = otherPath != null ? (Path.GetDirectoryName(otherPath) ?? otherPath) : null;
+        AppendCharDiff(rtb, dirPath, otherDirPath);
     }
 
     private void RotateView(bool isLeft)
