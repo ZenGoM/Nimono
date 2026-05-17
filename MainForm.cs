@@ -21,8 +21,6 @@ public class MainForm : Form
     private Button _cancelButton = null!;
     private NumericUpDown _thresholdInput = null!;
     private ComboBox _methodCombo = null!;
-    private Panel _modelPanel = null!;
-    private Label _modelPathLabel = null!;
     private Label _statusLabel = null!;
     private ProgressBar _progressBar = null!;
     private VirtualScrollPanel _resultsPanel = null!;
@@ -45,7 +43,6 @@ public class MainForm : Form
             SaveSettings();
         }
         _methodCombo.SelectedItem = _settings.SimilarityMethod == "DINOv2" ? "DINOv2（高精度）" : "pHash（高速）";
-        UpdateModelPanel();
         Size = new Size(_settings.WindowWidth, _settings.WindowHeight);
         ResizeEnd += (_, _) => { SaveSettings(); RecalculateAllPanelPositions(); };
         FormClosed += (_, _) => { _embedder?.Dispose(); _cts?.Cancel(); };
@@ -76,41 +73,6 @@ public class MainForm : Form
             Padding = new Padding(8, 6, 8, 6),
             BackColor = SystemColors.Control,
         };
-
-        // DINOv2 モデルパス行（DINOv2 選択時のみ表示）
-        _modelPanel = new Panel
-        {
-            Dock = DockStyle.Top,
-            Height = 30,
-            Padding = new Padding(8, 4, 8, 4),
-            BackColor = Color.FromArgb(240, 244, 255),
-            Visible = false,
-        };
-        var modelLabel = new Label
-        {
-            Text = "DINOv2 モデル:",
-            Left = 0, Top = 6, Width = 110,
-            TextAlign = ContentAlignment.MiddleLeft,
-        };
-        _modelPathLabel = new Label
-        {
-            Text = "（未設定）",
-            Left = 112, Top = 6,
-            Width = 560, Height = 20,
-            TextAlign = ContentAlignment.MiddleLeft,
-            ForeColor = Color.Gray,
-        };
-        var browseButton = new Button
-        {
-            Text = "参照...",
-            Left = 676, Top = 3,
-            Width = 70, Height = 24,
-        };
-        browseButton.Click += BrowseDINOv2Model_Click;
-        _toolTip?.SetToolTip(browseButton,
-            "DINOv2 の ONNX モデルファイル（.onnx）を選択します。\n" +
-            "HuggingFace の onnx-community/dinov2-small などからダウンロードできます。");
-        _modelPanel.Controls.AddRange([modelLabel, _modelPathLabel, browseButton]);
 
         _selectFoldersButton = new Button
         {
@@ -183,7 +145,6 @@ public class MainForm : Form
             bool isDINOv2 = _methodCombo.SelectedIndex == 1;
             _settings.SimilarityMethod = isDINOv2 ? "DINOv2" : "pHash";
             if (!isDINOv2) { _embedder?.Dispose(); _embedder = null; }
-            UpdateModelPanel();
             SaveSettings();
         };
 
@@ -239,7 +200,6 @@ public class MainForm : Form
 
         Controls.Add(_resultsPanel);
         Controls.Add(statusPanel);
-        Controls.Add(_modelPanel);
         Controls.Add(toolPanel);
     }
 
@@ -268,52 +228,6 @@ public class MainForm : Form
         SettingsStorage.Save(_settings);
     }
 
-    private void UpdateModelPanel()
-    {
-        bool isDINOv2 = _settings.SimilarityMethod == "DINOv2";
-        _modelPanel.Visible = isDINOv2;
-        if (isDINOv2)
-        {
-            if (string.IsNullOrEmpty(_settings.DINOv2ModelPath))
-            {
-                _modelPathLabel.Text = "（未設定） — 「参照...」でモデルファイルを選択してください";
-                _modelPathLabel.ForeColor = Color.OrangeRed;
-            }
-            else
-            {
-                _modelPathLabel.Text = _settings.DINOv2ModelPath;
-                _modelPathLabel.ForeColor = File.Exists(_settings.DINOv2ModelPath)
-                    ? Color.DarkGreen : Color.OrangeRed;
-            }
-        }
-    }
-
-    private void BrowseDINOv2Model_Click(object? sender, EventArgs e)
-    {
-        using var dlg = new OpenFileDialog
-        {
-            Title = "DINOv2 ONNX モデルを選択",
-            Filter = "ONNX モデル (*.onnx)|*.onnx|すべてのファイル (*.*)|*.*",
-            FileName = _settings.DINOv2ModelPath,
-        };
-        if (dlg.ShowDialog(this) != DialogResult.OK) return;
-
-        // モデルを検証してからロード
-        _embedder?.Dispose();
-        _embedder = null;
-        if (!DINOv2Embedder.TryCreate(dlg.FileName, out var embedder, out string error))
-        {
-            MessageBox.Show(this,
-                $"モデルの読み込みに失敗しました。\n\n{error}",
-                "DINOv2 エラー", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-        _embedder = embedder;
-        _settings.DINOv2ModelPath = dlg.FileName;
-        SaveSettings();
-        UpdateModelPanel();
-        _statusLabel.Text = $"DINOv2 モデル読み込み完了（埋め込み次元: {embedder.EmbeddingDim}）";
-    }
 
     private async void Scan_Click(object? sender, EventArgs e)
     {
