@@ -20,6 +20,7 @@ internal sealed class CompareForm : Form
     private Bitmap? _rightBitmap;
     private bool _suppressEvent;
     private bool _syncingView;
+    private bool _suppressColumnWidthSave;
     private int _currentRightIndex;
     private List<string> _paths = null!;
     private Dictionary<string, double> _similarities = null!;
@@ -172,7 +173,7 @@ internal sealed class CompareForm : Form
                 try { Clipboard.SetText(_paths[(int)_fileList.SelectedItems[0].Tag!]); } catch { }
         });
         _fileList.ContextMenuStrip = listMenu;
-        _fileList.ColumnWidthChanged += (_, _) => PersistSettings();
+        _fileList.ColumnWidthChanged += (_, _) => { if (!_suppressColumnWidthSave) PersistSettings(); };
 
         _mainSplitter.Panel2.Controls.Add(_fileList);
         Controls.Add(_mainSplitter);
@@ -187,10 +188,19 @@ internal sealed class CompareForm : Form
 
             // 列幅を復元
             var widths = _settings.CompareListColumnWidths;
+            _suppressColumnWidthSave = true;
             for (int i = 0; i < _fileList.Columns.Count && i < widths.Count; i++)
                 _fileList.Columns[i].Width = widths[i];
+            _suppressColumnWidthSave = false;
         };
-        ResizeEnd += (_, _) => PersistSettings();
+        ResizeEnd += (_, _) => { _leftView.ResetView(); PersistSettings(); };
+        var prevState = WindowState;
+        SizeChanged += (_, _) =>
+        {
+            if (WindowState == prevState) return;
+            prevState = WindowState;
+            _leftView.ResetView();
+        };
         _mainSplitter.SplitterMoved += (_, _) =>
         {
             _leftView.ResetView();
