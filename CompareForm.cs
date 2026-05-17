@@ -172,19 +172,30 @@ internal sealed class CompareForm : Form
                 try { Clipboard.SetText(_paths[(int)_fileList.SelectedItems[0].Tag!]); } catch { }
         });
         _fileList.ContextMenuStrip = listMenu;
+        _fileList.ColumnWidthChanged += (_, _) => PersistSettings();
 
         _mainSplitter.Panel2.Controls.Add(_fileList);
         Controls.Add(_mainSplitter);
 
         Load += (_, _) =>
         {
+            // スプリッター位置を復元
             int dist = _settings.CompareSplitterDistance;
             int h = _mainSplitter.Height;
             _mainSplitter.SplitterDistance =
                 dist > 80 && dist < h - 60 ? dist : (int)(h * 0.65);
+
+            // 列幅を復元
+            var widths = _settings.CompareListColumnWidths;
+            for (int i = 0; i < _fileList.Columns.Count && i < widths.Count; i++)
+                _fileList.Columns[i].Width = widths[i];
         };
         ResizeEnd += (_, _) => PersistSettings();
-        _mainSplitter.SplitterMoved += (_, _) => PersistSettings();
+        _mainSplitter.SplitterMoved += (_, _) =>
+        {
+            _leftView.ResetView();
+            PersistSettings();
+        };
     }
 
     private (ZoomableImagePanel view, RichTextBox info) BuildSide(
@@ -586,6 +597,8 @@ internal sealed class CompareForm : Form
         _settings.CompareFormWidth = Width;
         _settings.CompareFormHeight = Height;
         _settings.CompareSplitterDistance = _mainSplitter.SplitterDistance;
+        _settings.CompareListColumnWidths = _fileList.Columns
+            .Cast<ColumnHeader>().Select(c => c.Width).ToList();
         SettingsStorage.Save(_settings);
     }
 

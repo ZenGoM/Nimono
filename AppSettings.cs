@@ -15,6 +15,7 @@ internal sealed class AppSettings
     public Dictionary<string, int> ThumbnailRotations { get; set; } = new();
     public string SimilarityMethod { get; set; } = "pHash"; // "pHash" or "DINOv2"
     public string DINOv2ModelPath { get; set; } = "";
+    public List<int> CompareListColumnWidths { get; set; } = new();
 }
 
 internal static class SettingsStorage
