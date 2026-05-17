@@ -21,4 +21,10 @@
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.26.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="docs\model.onnx">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
 </Project>

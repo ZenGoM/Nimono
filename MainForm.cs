@@ -36,6 +36,14 @@ public class MainForm : Form
         _folders.AddRange(_settings.SearchFolders.Where(Directory.Exists));
         _thresholdInput.Value = Math.Clamp(_settings.SimilarityThreshold, 50, 100);
         _thresholdInput.ValueChanged += (_, _) => SaveSettings();
+        // 実行ファイルと同じフォルダーの model.onnx を自動検出
+        var bundledModel = Path.Combine(AppContext.BaseDirectory, "model.onnx");
+        if (File.Exists(bundledModel) &&
+            (string.IsNullOrEmpty(_settings.DINOv2ModelPath) || !File.Exists(_settings.DINOv2ModelPath)))
+        {
+            _settings.DINOv2ModelPath = bundledModel;
+            SaveSettings();
+        }
         _methodCombo.SelectedItem = _settings.SimilarityMethod == "DINOv2" ? "DINOv2（高精度）" : "pHash（高速）";
         UpdateModelPanel();
         Size = new Size(_settings.WindowWidth, _settings.WindowHeight);
