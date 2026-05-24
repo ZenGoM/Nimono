@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Microsoft.ML.OnnxRuntime.Tensors;
 
 namespace Nimono;
 
@@ -70,6 +71,9 @@ internal static class ImageGrouper
         var entries = new ConcurrentBag<ImageEntry>();
         var newPaths = new ConcurrentBag<string>();
         int done = 0;
+        int failed = 0;
+        int loggedErrors = 0;
+        const int MaxLoggedErrors = 5;
         int total = files.Count;
 
         Parallel.ForEach(
@@ -102,11 +106,19 @@ internal static class ImageGrouper
                         newPaths.Add(file);
                     }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    Interlocked.Increment(ref failed);
+                    if (Interlocked.Increment(ref loggedErrors) <= MaxLoggedErrors)
+                        ScanLogger.Log($"pHash計算失敗: {ex.GetType().Name}: {ex.Message} ({file})");
+                }
                 int n = Interlocked.Increment(ref done);
                 if (n % 8 == 0 || n == total)
                     progress?.Report(new GroupingProgress("ハッシュ計算中", n, total));
             });
+
+        if (failed > 0)
+            ScanLogger.Log($"pHash計算失敗合計: {failed}件 / {total}件中");
 
         return (entries.ToList(), newPaths.ToList());
     }
@@ -177,6 +189,9 @@ internal static class ImageGrouper
 
     // ── DINOv2 ────────────────────────────────────────────────────────
 
+    private sealed record PreprocessedItem(
+        string Path, DenseTensor<float> Tensor, long FileSize, long Ticks, ulong? CachedPHash);
+
     public static (IReadOnlyList<EmbeddingEntry> Entries, IReadOnlyList<string> NewPaths) ComputeEmbeddings(
         IReadOnlyList<string> files,
         DINOv2Embedder embedder,
@@ -186,46 +201,135 @@ internal static class ImageGrouper
         var entries = new ConcurrentBag<EmbeddingEntry>();
         var newPaths = new ConcurrentBag<string>();
         int done = 0;
+        int failed = 0;
+        int loggedErrors = 0;
+        int sampledBatches = 0;
+        const int MaxLoggedErrors = 5;
+        const int MaxSampleBatches = 5;
+        // バッチサイズ: GPU の per-Run overhead を分散させる。8 にすると DirectML で 1.5〜2× 高速化。
+        // CPU EP では Run 自体が軽いのでバッチ不要（バッチサイズ=1）。
+        int batchSize = embedder.IsGpu ? 8 : 1;
         int total = files.Count;
 
-        // DINOv2 は重いので並列度を抑える
-        Parallel.ForEach(
-            files,
-            new ParallelOptions
+        // Producer-Consumer:
+        //   - N 個の producer スレッドが画像をロード・前処理して queue に push
+        //   - 1 個の consumer スレッドが queue から最大 batchSize 件まとめて pull → InferBatch
+        // キャッシュヒットは GPU 不要なので producer 内で直接 entries に追加する（queue を経由しない）。
+        // queue 容量はメモリと GPU starvation のバランス。32 件 ≈ 32 × 600KB = 19MB 程度。
+        var queue = new BlockingCollection<PreprocessedItem>(boundedCapacity: 32);
+        int parallelism = Math.Max(1, Environment.ProcessorCount / 2);
+
+        // ── Producer ────────────────────────────────────────────────
+        var producerTask = Task.Run(() =>
+        {
+            try
             {
-                CancellationToken = token,
-                MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount / 2),
-            },
-            file =>
+                Parallel.ForEach(files,
+                    new ParallelOptions { CancellationToken = token, MaxDegreeOfParallelism = parallelism },
+                    file =>
+                    {
+                        try
+                        {
+                            var fi = new FileInfo(file);
+                            long size = fi.Length;
+                            long ticks = fi.LastWriteTimeUtc.Ticks;
+
+                            if (CacheManager.MemoryCache.TryGetValue(file, out var cache) &&
+                                cache.FileSize == size &&
+                                cache.LastWriteTimeTicks == ticks &&
+                                cache.Embedding != null)
+                            {
+                                entries.Add(new EmbeddingEntry(file, cache.Embedding));
+                                int n = Interlocked.Increment(ref done);
+                                if (n % 4 == 0 || n == total)
+                                    progress?.Report(new GroupingProgress("特徴量計算中 (DINOv2)", n, total));
+                            }
+                            else
+                            {
+                                var tensor = embedder.Preprocess(file);
+                                queue.Add(new PreprocessedItem(file, tensor, size, ticks, cache?.PHash), token);
+                            }
+                        }
+                        catch (OperationCanceledException) { throw; }
+                        catch (Exception ex)
+                        {
+                            Interlocked.Increment(ref failed);
+                            if (Interlocked.Increment(ref loggedErrors) <= MaxLoggedErrors)
+                                ScanLogger.Log($"DINOv2前処理失敗: {ex.GetType().Name}: {ex.Message} ({file})");
+                            int n = Interlocked.Increment(ref done);
+                            if (n % 4 == 0 || n == total)
+                                progress?.Report(new GroupingProgress("特徴量計算中 (DINOv2)", n, total));
+                        }
+                    });
+            }
+            catch (OperationCanceledException) { /* キャンセル時の通常パス */ }
+            finally
             {
-                try
+                queue.CompleteAdding();
+            }
+        }, token);
+
+        // ── Consumer (GPU、単一スレッド) ──────────────────────────────
+        var consumerTask = Task.Run(() =>
+        {
+            var batch = new List<PreprocessedItem>(batchSize);
+            try
+            {
+                // 1 件目は無期限ブロック、以降は短時間（15ms）待って追加アイテムを集める。
+                // これで producer が GDI+ ロックで遅くなっていても、わずかな待ちでバッチを満杯にできる。
+                // producer が完全に停滞しているなら短時間でタイムアウトして部分バッチで処理（待っても無駄）。
+                // ペナルティ最大 = (batchSize-1) × FillTimeoutMs = 7 × 15 = 105ms/バッチ、
+                // それ以上に batching で稼げる時間の方が大きい。
+                const int FillTimeoutMs = 15;
+                while (queue.TryTake(out var first, Timeout.Infinite, token))
                 {
-                    var fi = new FileInfo(file);
-                    long size = fi.Length;
-                    long ticks = fi.LastWriteTimeUtc.Ticks;
+                    batch.Add(first);
+                    while (batch.Count < batchSize && queue.TryTake(out var next, FillTimeoutMs))
+                        batch.Add(next);
 
-                    if (CacheManager.MemoryCache.TryGetValue(file, out var cache) &&
-                        cache.FileSize == size &&
-                        cache.LastWriteTimeTicks == ticks &&
-                        cache.Embedding != null)
+                    bool sample = Interlocked.Increment(ref sampledBatches) <= MaxSampleBatches;
+                    var sw = sample ? System.Diagnostics.Stopwatch.StartNew() : null;
+
+                    try
                     {
-                        entries.Add(new EmbeddingEntry(file, cache.Embedding));
+                        var tensors = new DenseTensor<float>[batch.Count];
+                        for (int i = 0; i < batch.Count; i++) tensors[i] = batch[i].Tensor;
+                        var embs = embedder.InferBatch(tensors);
+                        for (int i = 0; i < batch.Count; i++)
+                        {
+                            entries.Add(new EmbeddingEntry(batch[i].Path, embs[i]));
+                            CacheManager.MemoryCache[batch[i].Path] =
+                                new CacheEntry(batch[i].FileSize, batch[i].Ticks, batch[i].CachedPHash, embs[i]);
+                            newPaths.Add(batch[i].Path);
+                            int n = Interlocked.Increment(ref done);
+                            if (n % 4 == 0 || n == total)
+                                progress?.Report(new GroupingProgress("特徴量計算中 (DINOv2)", n, total));
+                        }
+
+                        if (sample)
+                            ScanLogger.Log($"DINOv2バッチ #{sampledBatches}: batch={batch.Count}枚 infer={sw!.ElapsedMilliseconds}ms ({(double)sw.ElapsedMilliseconds / batch.Count:F1}ms/枚)");
                     }
-                    else
+                    catch (Exception ex)
                     {
-                        var emb = embedder.Embed(file);
-                        entries.Add(new EmbeddingEntry(file, emb));
-                        CacheManager.MemoryCache[file] = new CacheEntry(size, ticks, cache?.PHash, emb);
-                        newPaths.Add(file);
+                        Interlocked.Add(ref failed, batch.Count);
+                        if (Interlocked.Increment(ref loggedErrors) <= MaxLoggedErrors)
+                            ScanLogger.Log($"DINOv2バッチ推論失敗: batch={batch.Count}枚 {ex.GetType().Name}: {ex.Message}");
+                        int n = Interlocked.Add(ref done, batch.Count);
+                        progress?.Report(new GroupingProgress("特徴量計算中 (DINOv2)", n, total));
                     }
+                    batch.Clear();
                 }
-                catch { }
-                int n = Interlocked.Increment(ref done);
-                if (n % 4 == 0 || n == total)
-                    progress?.Report(new GroupingProgress("特徴量計算中 (DINOv2)", n, total));
-            });
+            }
+            catch (OperationCanceledException) { /* キャンセル */ }
+        }, token);
 
-        return (entries.ToList(), newPaths.ToList());
+        try { Task.WaitAll([producerTask, consumerTask], token); }
+        catch (OperationCanceledException) { }
+        catch (AggregateException ae) when (ae.InnerExceptions.All(e => e is OperationCanceledException)) { }
+
+        var entryList = entries.ToList();
+        ScanLogger.Log($"DINOv2埋め込み内訳: 成功={entryList.Count}件, 失敗={failed}件, 列挙={total}件");
+        return (entryList, newPaths.ToList());
     }
 
     public static IReadOnlyList<ImageGroup> GroupByEmbedding(

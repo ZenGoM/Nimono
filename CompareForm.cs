@@ -72,6 +72,9 @@ internal sealed class CompareForm : Form
         Size = new Size(
             Math.Max(600, _settings.CompareFormWidth),
             Math.Max(400, _settings.CompareFormHeight));
+        // Size を設定した後で最大化状態を復元する
+        if (_settings.CompareWindowMaximized)
+            WindowState = FormWindowState.Maximized;
 
         _toolTip = new ToolTip { AutoPopDelay = 10000, InitialDelay = 400 };
 
@@ -213,6 +216,7 @@ internal sealed class CompareForm : Form
             if (WindowState == prevState) return;
             prevState = WindowState;
             _leftView.ResetView();
+            PersistSettings(); // 最大化状態を永続化
         };
         _mainSplitter.SplitterMoved += (_, _) =>
         {
@@ -643,6 +647,9 @@ internal sealed class CompareForm : Form
     {
         if (_loading) return;
 
+        _settings.CompareWindowMaximized = WindowState == FormWindowState.Maximized;
+
+        // 最大化中は通常サイズを上書きしない
         if (WindowState == FormWindowState.Normal)
         {
             _settings.CompareFormWidth = Width;

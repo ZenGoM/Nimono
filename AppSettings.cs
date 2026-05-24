@@ -8,12 +8,14 @@ internal sealed class AppSettings
     public int SimilarityThreshold { get; set; } = 85;
     public int WindowWidth { get; set; } = 1100;
     public int WindowHeight { get; set; } = 750;
+    public bool MainWindowMaximized { get; set; } = false;
     public int CompareFormWidth { get; set; } = 900;
     public int CompareFormHeight { get; set; } = 700;
+    public bool CompareWindowMaximized { get; set; } = false;
     public int CompareSplitterDistance { get; set; } = 0;
     // パスごとのサムネイル回転回数（1=90°, 2=180°, 3=270°）。0は保存しない
     public Dictionary<string, int> ThumbnailRotations { get; set; } = new();
-    public string SimilarityMethod { get; set; } = "pHash"; // "pHash", "DINOv2", "DINOv2_CUDA"
+    public string SimilarityMethod { get; set; } = "pHash"; // "pHash", "DINOv2", "DINOv2_DML"（旧 "DINOv2_CUDA" も DML として扱う）
     public string DINOv2ModelPath { get; set; } = "";
     public List<int> CompareListColumnWidths { get; set; } = new();
 }

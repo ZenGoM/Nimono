@@ -6,6 +6,13 @@ public class MainForm : Form
 {
     private const int ThumbnailSize = 140;
 
+    // メインビューに表示するグループあたりのサムネイル最大数。
+    // これを超えるグループは先頭 N 枚のみ描画し、残りは「比較」画面で確認する。
+    // 巨大グループ（数千〜数万枚）をそのまま描画すると 1 サムネイルあたり ~5 USER ハンドル
+    // 必要なため、Win32 のプロセスあたりハンドル上限 (10,000) を即超えて
+    // Win32Exception 1158（ウィンドウのハンドル作成エラー）が発生する。
+    private const int MaxThumbnailsPerGroup = 50;
+
     private readonly List<string> _folders = new();
     private readonly List<Bitmap> _allocatedThumbnails = new();
     private readonly List<ImageGroup> _groups = new();
@@ -33,6 +40,16 @@ public class MainForm : Form
     {
         InitializeComponents();
         _settings = SettingsStorage.Load();
+
+        // ── ウィンドウサイズと最大化状態は最優先で適用する ──
+        // この後の設定反映（_methodCombo.SelectedItem の代入による SelectedIndexChanged や
+        // bundledModel 検出のための SaveSettings 等）の中で SaveSettings が呼ばれると、
+        // その時点の WindowState が Normal のまま _settings.MainWindowMaximized=false で
+        // 上書き保存されてしまう。それを防ぐため、ここで先に WindowState を確定させる。
+        Size = new Size(_settings.WindowWidth, _settings.WindowHeight);
+        if (_settings.MainWindowMaximized)
+            WindowState = FormWindowState.Maximized;
+
         _folders.AddRange(_settings.SearchFolders.Where(Directory.Exists));
         _thresholdInput.Value = Math.Clamp(_settings.SimilarityThreshold, 50, 100);
         _thresholdInput.ValueChanged += (_, _) => SaveSettings();
@@ -46,18 +63,18 @@ public class MainForm : Form
         }
         _methodCombo.SelectedItem = _settings.SimilarityMethod switch
         {
-            "DINOv2_CUDA" => "DINOv2 CUDA",
-            "DINOv2"      => "DINOv2 CPU",
-            _             => "pHash（高速）",
+            "DINOv2_DML" or "DINOv2_CUDA" => "DINOv2 GPU (DirectML)",
+            "DINOv2"                       => "DINOv2 CPU",
+            _                              => "pHash（高速）",
         };
         UpdateClearCacheButton();
-        Size = new Size(_settings.WindowWidth, _settings.WindowHeight);
         ResizeEnd += (_, _) => { SaveSettings(); RecalculateAllPanelPositions(); };
         var prevState = WindowState;
         SizeChanged += (_, _) =>
         {
             if (WindowState == prevState) return;
             prevState = WindowState;
+            SaveSettings(); // 最大化状態を永続化
             RecalculateAllPanelPositions();
         };
         FormClosed += (_, _) => { _embedder?.Dispose(); _cts?.Cancel(); };
@@ -72,7 +89,6 @@ public class MainForm : Form
     {
         Text = "Nimono — 似た画像をグルーピング";
         Size = new Size(1100, 750);
-        MinimumSize = new Size(700, 500);
         Font = new Font("Segoe UI", 9.5f);
         StartPosition = FormStartPosition.CenterScreen;
         var exeIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
@@ -85,15 +101,24 @@ public class MainForm : Form
         {
             Dock = DockStyle.Top,
             Height = 44,
+            // 最小化されてもツールバーの高さが 0 まで縮まないようにする。
+            // これを設定しないと、最小化→復元の遷移で Height=0 のまま戻らず非表示になる。
+            MinimumSize = new Size(0, 44),
             Padding = new Padding(8, 6, 8, 6),
             BackColor = SystemColors.Control,
         };
+
+        // ── ツールバー: 左から右に進めて X 座標を計算する ──
+        // WinForms の Panel は絶対配置の子コントロールに対しては Padding を反映しないため、
+        // 明示的な LeftMargin で左端の余白を確保する。
+        const int LeftMargin = 8;
+        const int ControlGap = 8;
+        const int GroupGap = 16; // 機能グループ間はやや広めにスペースを取る
 
         _selectFoldersButton = new Button
         {
             Text = "フォルダー選択...",
             Width = 140,
-            Left = 0,
             Top = 4,
             Height = 28,
         };
@@ -103,7 +128,6 @@ public class MainForm : Form
         {
             Text = "スキャン開始",
             Width = 110,
-            Left = 148,
             Top = 4,
             Height = 28,
             Enabled = false,
@@ -113,26 +137,23 @@ public class MainForm : Form
         var methodLabel = new Label
         {
             Text = "計算方式:",
-            Left = 270,
             Top = 9,
             AutoSize = true,
             TextAlign = ContentAlignment.MiddleLeft,
         };
         _methodCombo = new ComboBox
         {
-            Left = 350,
             Top = 6,
-            Width = 140,
             DropDownStyle = ComboBoxStyle.DropDownList,
         };
-        _methodCombo.Items.AddRange(["pHash（高速）", "DINOv2 CPU", "DINOv2 CUDA"]);
+        _methodCombo.Items.AddRange(["pHash（高速）", "DINOv2 CPU", "DINOv2 GPU (DirectML)"]);
         _methodCombo.SelectedIndex = 0;
         _methodCombo.SelectedIndexChanged += (_, _) =>
         {
             string newMethod = _methodCombo.SelectedIndex switch
             {
                 1 => "DINOv2",
-                2 => "DINOv2_CUDA",
+                2 => "DINOv2_DML",
                 _ => "pHash",
             };
             bool epChanged = _settings.SimilarityMethod != newMethod;
@@ -140,11 +161,21 @@ public class MainForm : Form
             if (epChanged) { _embedder?.Dispose(); _embedder = null; }
             SaveSettings();
         };
+        // 最も長い項目に合わせてドロップダウン幅を決める。
+        // 注意: コントロールが親に追加される前は Font プロパティがデフォルト
+        // (Microsoft Sans Serif 8.25pt) を返してしまうため、明示的にフォーム自身の Font
+        // (Segoe UI 9.5pt) で計測する。これを怠るとデフォルトフォントが幅狭のため
+        // 計測値が実描画より小さくなり、コンボの文字がクリップされる。
+        // 余白 = ドロップダウン矢印(SystemInformation.VerticalScrollBarWidth) + 内側 padding(14)
+        int maxComboTextWidth = 0;
+        foreach (string item in _methodCombo.Items)
+            maxComboTextWidth = Math.Max(maxComboTextWidth,
+                TextRenderer.MeasureText(item, this.Font).Width);
+        _methodCombo.Width = maxComboTextWidth + SystemInformation.VerticalScrollBarWidth + 14;
 
         var thresholdLabel = new Label
         {
             Text = "類似度しきい値:",
-            Left = 510,
             Top = 9,
             AutoSize = true,
             TextAlign = ContentAlignment.MiddleLeft,
@@ -152,7 +183,6 @@ public class MainForm : Form
 
         _thresholdInput = new NumericUpDown
         {
-            Left = 630,
             Top = 6,
             Width = 70,
             Minimum = 50,
@@ -163,7 +193,6 @@ public class MainForm : Form
         var pctLabel = new Label
         {
             Text = "%",
-            Left = 702,
             Top = 9,
             AutoSize = true,
             TextAlign = ContentAlignment.MiddleLeft,
@@ -173,14 +202,13 @@ public class MainForm : Form
         {
             Text = "キャッシュクリア",
             Width = 200,
-            Left = 740,
             Top = 4,
             Height = 28,
             Enabled = false,
         };
-        _clearCacheButton.Click += (_, _) => 
+        _clearCacheButton.Click += (_, _) =>
         {
-            var dr = MessageBox.Show(this, "キャッシュをクリアしますか？\n（次回のスキャンに時間がかかるようになります）", 
+            var dr = MessageBox.Show(this, "キャッシュをクリアしますか？\n（次回のスキャンに時間がかかるようになります）",
                 "確認", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
             if (dr == DialogResult.Yes)
             {
@@ -198,6 +226,19 @@ public class MainForm : Form
         };
         _cancelButton.Click += (_, _) => _cts?.Cancel();
 
+        // ── 左から右に Left を進めて配置 ──
+        // ラベル幅も親追加前の Font (デフォルト = Microsoft Sans Serif 8.25pt) ではなく
+        // フォーム自身の Font (Segoe UI 9.5pt) で計測する必要がある。
+        int x = LeftMargin;
+        _selectFoldersButton.Left = x; x = _selectFoldersButton.Right + ControlGap;
+        _scanButton.Left          = x; x = _scanButton.Right + GroupGap;
+        methodLabel.Left          = x; x += TextRenderer.MeasureText(methodLabel.Text, this.Font).Width + ControlGap;
+        _methodCombo.Left         = x; x = _methodCombo.Right + GroupGap;
+        thresholdLabel.Left       = x; x += TextRenderer.MeasureText(thresholdLabel.Text, this.Font).Width + ControlGap;
+        _thresholdInput.Left      = x; x = _thresholdInput.Right + 4;
+        pctLabel.Left             = x; x += TextRenderer.MeasureText(pctLabel.Text, this.Font).Width + GroupGap;
+        _clearCacheButton.Left    = x;
+
         toolPanel.Controls.Add(_selectFoldersButton);
         toolPanel.Controls.Add(_scanButton);
         toolPanel.Controls.Add(methodLabel);
@@ -208,10 +249,20 @@ public class MainForm : Form
         toolPanel.Controls.Add(_clearCacheButton);
         toolPanel.Controls.Add(_cancelButton);
 
+        // ── 全コントロールが折り返さず収まる最小フォーム幅を計算 ──
+        // 必要なパネル幅 = clearCache の右端 + 余白 + cancel ボタン(Dock=Right) + パネルの右パディング
+        int requiredPanelWidth = _clearCacheButton.Right + ControlGap + _cancelButton.Width + toolPanel.Padding.Right;
+        int nonClientHorizontal = Width - ClientSize.Width;
+        if (nonClientHorizontal <= 0)
+            nonClientHorizontal = SystemInformation.HorizontalResizeBorderThickness * 2;
+        MinimumSize = new Size(requiredPanelWidth + nonClientHorizontal, 500);
+
         var statusPanel = new Panel
         {
             Dock = DockStyle.Bottom,
             Height = 26,
+            // 最小化時の高さ崩壊を防ぐ（toolPanel と同じ理由）
+            MinimumSize = new Size(0, 26),
             Padding = new Padding(8, 0, 8, 0),
         };
         _progressBar = new ProgressBar
@@ -240,6 +291,10 @@ public class MainForm : Form
         };
         _resultsPanel.Scrolled += (_, _) => UpdateVisibleGroups();
 
+        // WinForms の Dock は逆 Z オーダー（後から Add したものが先に処理される）で
+        // 計算されるため、Fill→Bottom→Top の順で Add する必要がある。
+        // 逆順で Add すると Fill が全クライアント領域を占有してしまい、Top の
+        // ツールバーがその上に被さって _resultsPanel の先頭が隠れる。
         Controls.Add(_resultsPanel);
         Controls.Add(statusPanel);
         Controls.Add(toolPanel);
@@ -265,7 +320,9 @@ public class MainForm : Form
     {
         _settings.SearchFolders = _folders.ToList();
         _settings.SimilarityThreshold = (int)_thresholdInput.Value;
-        
+        _settings.MainWindowMaximized = WindowState == FormWindowState.Maximized;
+
+        // 最大化中は通常サイズを上書きしない（最大化を解除したときに復元するため）
         if (WindowState == FormWindowState.Normal)
         {
             _settings.WindowWidth = Width;
@@ -276,20 +333,14 @@ public class MainForm : Form
     }
 
 
-    private static readonly string ScanLogPath =
-        Path.Combine(AppContext.BaseDirectory, "scan.log");
-
-    private static void Log(string msg)
-    {
-        try { File.AppendAllText(ScanLogPath, $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\n"); } catch { }
-    }
+    private static void Log(string msg) => ScanLogger.Log(msg);
 
     private async void Scan_Click(object? sender, EventArgs e)
     {
         if (_folders.Count == 0) return;
 
-        bool isDINOv2 = _settings.SimilarityMethod is "DINOv2" or "DINOv2_CUDA";
-        bool useCuda  = _settings.SimilarityMethod == "DINOv2_CUDA";
+        bool isDINOv2 = _settings.SimilarityMethod is "DINOv2" or "DINOv2_DML" or "DINOv2_CUDA";
+        bool useGpu   = _settings.SimilarityMethod is "DINOv2_DML" or "DINOv2_CUDA";
 
         // DINOv2 の場合はモデルが必要
         if (isDINOv2)
@@ -305,20 +356,18 @@ public class MainForm : Form
             }
             if (_embedder is null)
             {
-                if (!DINOv2Embedder.TryCreate(_settings.DINOv2ModelPath, useCuda, out var emb, out string err, out bool cudaFallback))
+                if (!DINOv2Embedder.TryCreate(_settings.DINOv2ModelPath, useGpu, out var emb, out string err))
                 {
-                    MessageBox.Show(this, $"モデルの読み込みに失敗しました。\n\n{err}",
-                        "DINOv2 エラー", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    string body = useGpu
+                        ? $"DirectML (GPU) の初期化に失敗しました。スキャンを中止します。\n\n" +
+                          $"GPU を使用するには、DirectX 12 対応の GPU と最新のグラフィックドライバーが必要です。\n" +
+                          $"CPU で実行するには、計算方式を「DINOv2 CPU」に切り替えてください。\n\n{err}"
+                        : $"モデルの読み込みに失敗しました。\n\n{err}";
+                    MessageBox.Show(this, body, "DINOv2 エラー",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
                 _embedder = emb;
-                if (cudaFallback)
-                {
-                    MessageBox.Show(this,
-                        "CUDA の初期化に失敗したため、CPU モードで実行します。\n\n" +
-                        "GPU を使用するには、NVIDIA GPU と対応する CUDA ランタイムが必要です。",
-                        "DINOv2 — CPU フォールバック", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                }
             }
         }
 
@@ -337,13 +386,13 @@ public class MainForm : Form
         try
         {
             // 1) ファイル列挙
-            File.WriteAllText(ScanLogPath, $"[{DateTime.Now:HH:mm:ss.fff}] スキャン開始 mode={( isDINOv2 ? "DINOv2" : "pHash")}\n");
+            ScanLogger.Reset($"スキャン開始 mode={(isDINOv2 ? (useGpu ? "DINOv2_DML" : "DINOv2") : "pHash")}");
             _statusLabel.Text = "ファイルを列挙中...";
             _progressBar.Style = ProgressBarStyle.Marquee;
             var files = await Task.Run(
                 () => ImageGrouper.EnumerateImages(folders, token), token);
 
-            if (token.IsCancellationRequested) return;
+            token.ThrowIfCancellationRequested();
 
             if (files.Count == 0)
             {
@@ -372,7 +421,7 @@ public class MainForm : Form
                 newPaths = embNewPaths;
                 Log($"DINOv2埋め込み計算完了: {embeddings.Count}件");
 
-                if (token.IsCancellationRequested) return;
+                token.ThrowIfCancellationRequested();
 
                 Log("DINOv2グルーピング開始");
                 groups = await Task.Run(
@@ -387,7 +436,7 @@ public class MainForm : Form
                 newPaths = hashNewPaths;
                 Log($"pHashハッシュ計算完了: {entries.Count}件");
 
-                if (token.IsCancellationRequested) return;
+                token.ThrowIfCancellationRequested();
 
                 Log("pHashグルーピング開始");
                 groups = await Task.Run(
@@ -395,7 +444,7 @@ public class MainForm : Form
                 Log($"pHashグルーピング完了: {groups.Count}グループ");
             }
 
-            if (token.IsCancellationRequested) return;
+            token.ThrowIfCancellationRequested();
 
             Log("キャッシュ保存開始");
             _statusLabel.Text = "キャッシュを保存中...";
@@ -430,6 +479,10 @@ public class MainForm : Form
 
     private void OnProgress(GroupingProgress p)
     {
+        // Progress<T> は UI thread に Post で配信されるため、
+        // cancel が catch ブロックで処理された後にも遅延到着する可能性がある。
+        // その場合 "キャンセルされました" を上書きしないよう、ここで弾く。
+        if (_cts is null || _cts.IsCancellationRequested) return;
         _statusLabel.Text = $"{p.Phase} — {p.Current:N0} / {p.Total:N0}";
         if (p.Total > 0)
         {
@@ -505,14 +558,18 @@ public class MainForm : Form
     /// </summary>
     private static int EstimateGroupHeight(int pathCount, int panelWidth)
     {
+        // BuildGroupPanel と同じ上限を適用（超過分は「...他 N 枚」ラベル 1 行で表現）
+        int displayCount = Math.Min(pathCount, MaxThumbnailsPerGroup);
+        int truncatedExtra = pathCount > displayCount ? 28 : 0;
+
         const int headerHeight = 28;
         const int wrapOuterWidth = ThumbnailSize + 8 + 8;  // wrap幅 + 左右マージン
         const int wrapOuterHeight = 250;                    // 推定wrap高さ
         const int flowPadding = 12;                         // FlowLayoutPanel上下パディング
         int flowInnerWidth = Math.Max(1, panelWidth - 2 - flowPadding);
         int itemsPerRow = Math.Max(1, flowInnerWidth / wrapOuterWidth);
-        int rows = (pathCount + itemsPerRow - 1) / itemsPerRow;
-        return headerHeight + rows * wrapOuterHeight + flowPadding + 2;
+        int rows = (displayCount + itemsPerRow - 1) / itemsPerRow;
+        return headerHeight + rows * wrapOuterHeight + flowPadding + 2 + truncatedExtra;
     }
 
     /// <summary>
@@ -774,10 +831,27 @@ public class MainForm : Form
         };
 
         _groupFlows[group.Id] = flow;
-        foreach (var path in group.Paths)
+
+        // 大量サムネイルでハンドル枯渇しないよう上限を設ける。
+        int totalCount = group.Paths.Count;
+        int displayCount = Math.Min(totalCount, MaxThumbnailsPerGroup);
+        for (int i = 0; i < displayCount; i++)
         {
+            var path = group.Paths[i];
             var thumb = CreateThumbnail(path, group.Similarities[path], group.Id);
             flow.Controls.Add(thumb);
+        }
+        if (totalCount > displayCount)
+        {
+            var moreLabel = new Label
+            {
+                Text = $"...他 {totalCount - displayCount} 枚（「比較」ボタンで全件表示）",
+                AutoSize = true,
+                ForeColor = Color.FromArgb(100, 100, 100),
+                Font = new Font("Segoe UI", 9f, FontStyle.Italic),
+                Margin = new Padding(8, 12, 8, 8),
+            };
+            flow.Controls.Add(moreLabel);
         }
 
         var container = new Panel
@@ -835,9 +909,12 @@ public class MainForm : Form
             BackColor = Color.White,
         };
 
+        // similarity == 1.0 は基準画像（グループ内で最も類似度の高い、または明示的に
+        // 基準として選ばれた画像）。CompareForm の表記と合わせて「【基準】」と表示する。
+        bool isReference = similarity >= 0.9999;
         var simLabel = new Label
         {
-            Text = $"類似度: {similarity:P0}",
+            Text = isReference ? "【基準】" : $"類似度: {similarity:P0}",
             Left = 4,
             Top = 4,
             Width = ThumbnailSize,
