@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Microsoft Store公開用のアプリマニフェストファイル -->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <!-- パッケージ識別情報 (ユーザー指定の値) -->
+  <Identity
+    Name="ZenGoM.Nimono"
+    Publisher="CN=E2338FF3-89FC-4D73-967C-BC126F7A8857"
+    Version="1.0.0.0"
+    ProcessorArchitecture="x64" />
+
+  <!-- パッケージのプロパティとロゴ定義 -->
+  <Properties>
+    <DisplayName>Nimono</DisplayName>
+    <PublisherDisplayName>ZenGoM</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <!-- 動作対象とするWindowsのバージョン -->
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.22621.0" />
+  </Dependencies>
+
+  <!-- リソース言語 (日本語) -->
+  <Resources>
+    <Resource Language="ja-JP" />
+  </Resources>
+
+  <!-- アプリケーションの定義 -->
+  <!-- デスクトップブリッジ(FullTrust)アプリとして動作するため EntryPoint は FullTrustApplication とします -->
+  <Applications>
+    <Application Id="App" Executable="Nimono.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="Nimono"
+        Description="Nimono"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+        <uap:SplashScreen Image="Assets\Square150x150Logo.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <!-- 必要な機能権限 (通常のデスクトップアプリの動作に必須の runFullTrust 権限) -->
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>
