@@ -838,7 +838,7 @@ public class MainForm : Form
         for (int i = 0; i < displayCount; i++)
         {
             var path = group.Paths[i];
-            var thumb = CreateThumbnail(path, group.Similarities[path], group.Id);
+            var thumb = CreateThumbnail(path, group.Similarities[path], group.Id, i == 0);
             flow.Controls.Add(thumb);
         }
         if (totalCount > displayCount)
@@ -866,7 +866,7 @@ public class MainForm : Form
         return container;
     }
 
-    private Control CreateThumbnail(string path, double similarity, int groupId)
+    private Control CreateThumbnail(string path, double similarity, int groupId, bool isReference)
     {
         var (bmp, originalSize) = TryLoadThumbnail(path);
 
@@ -909,9 +909,8 @@ public class MainForm : Form
             BackColor = Color.White,
         };
 
-        // similarity == 1.0 は基準画像（グループ内で最も類似度の高い、または明示的に
-        // 基準として選ばれた画像）。CompareForm の表記と合わせて「【基準】」と表示する。
-        bool isReference = similarity >= 0.9999;
+        // 引数 isReference を用いて、グループの先頭画像（基準画像）には「【基準】」を表示し、
+        // それ以外には類似度を表示する。
         var simLabel = new Label
         {
             Text = isReference ? "【基準】" : $"類似度: {similarity:P0}",
@@ -1146,8 +1145,12 @@ public class MainForm : Form
             c.Dispose();
         }
         flow.Controls.Clear();
+        int i = 0;
         foreach (var path in group.Paths)
-            flow.Controls.Add(CreateThumbnail(path, group.Similarities[path], group.Id));
+        {
+            flow.Controls.Add(CreateThumbnail(path, group.Similarities[path], group.Id, i == 0));
+            i++;
+        }
         flow.ResumeLayout(true);
 
         if (_groupPanels.TryGetValue(group.Id, out var panel))

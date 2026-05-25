@@ -8,10 +8,18 @@ namespace Nimono.Tests;
 [TestClass]
 public class MainFormTests
 {
+    private static string CreateTempImageFile()
+    {
+        string path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString() + ".jpg");
+        File.WriteAllBytes(path, new byte[100]);
+        return path;
+    }
+
     [TestMethod]
     public void RenderGroups_DisplaysGroupPanels_InResultsPanel()
     {
         Exception? threadException = null;
+        var tempFiles = new List<string>();
 
         var thread = new Thread(() =>
         {
@@ -22,11 +30,24 @@ public class MainFormTests
                 var imageGroupType = typeof(MainForm).Assembly.GetType("Nimono.ImageGroup");
                 Assert.IsNotNull(imageGroupType, "ImageGroup type should exist in Nimono assembly.");
 
-                var ctor = imageGroupType.GetConstructor(new[] { typeof(int), typeof(IReadOnlyList<string>) });
+                var ctor = imageGroupType.GetConstructor(new[] {
+                    typeof(int),
+                    typeof(IReadOnlyList<string>),
+                    typeof(IReadOnlyDictionary<string, double>),
+                    typeof(IReadOnlyDictionary<string, ulong>),
+                    typeof(IReadOnlyDictionary<string, float[]>)
+                });
                 Assert.IsNotNull(ctor, "ImageGroup constructor not found.");
 
-                var paths = new List<string> { "C:\\temp\\a.jpg", "C:\\temp\\b.jpg" };
-                var group = ctor.Invoke(new object[] { 1, paths.AsReadOnly() });
+                string file1 = CreateTempImageFile();
+                string file2 = CreateTempImageFile();
+                tempFiles.Add(file1);
+                tempFiles.Add(file2);
+
+                var paths = new List<string> { file1, file2 };
+                var similarities = new Dictionary<string, double> { { file1, 1.0 }, { file2, 0.9 } };
+                var hashes = new Dictionary<string, ulong> { { file1, 0UL }, { file2, 0UL } };
+                var group = ctor.Invoke(new object[] { 1, paths.AsReadOnly(), similarities, hashes, null! });
 
                 var groupsArray = Array.CreateInstance(imageGroupType, 1);
                 groupsArray.SetValue(group, 0);
@@ -45,7 +66,9 @@ public class MainFormTests
                 var groupPanel = resultsPanel.Controls[0];
                 Assert.IsInstanceOfType(groupPanel, typeof(Panel), "Group panel should be a Panel.");
 
-                var header = groupPanel.Controls.OfType<Label>().FirstOrDefault();
+                var header = groupPanel.Controls.OfType<Panel>()
+                    .SelectMany(p => p.Controls.OfType<Label>())
+                    .FirstOrDefault();
                 Assert.IsNotNull(header, "Group panel should contain a header label.");
                 Assert.AreEqual("グループ 1 — 2 枚", header.Text);
             }
@@ -59,6 +82,11 @@ public class MainFormTests
         thread.Start();
         thread.Join();
 
+        foreach (var file in tempFiles)
+        {
+            try { File.Delete(file); } catch { }
+        }
+
         if (threadException is not null)
             Assert.Fail($"Test thread failed: {threadException}", threadException);
     }
@@ -67,6 +95,7 @@ public class MainFormTests
     public void RenderGroups_SetsHeightForAllGroupPanels()
     {
         Exception? threadException = null;
+        var tempFiles = new List<string>();
 
         var thread = new Thread(() =>
         {
@@ -77,13 +106,33 @@ public class MainFormTests
                 var imageGroupType = typeof(MainForm).Assembly.GetType("Nimono.ImageGroup");
                 Assert.IsNotNull(imageGroupType, "ImageGroup type should exist in Nimono assembly.");
 
-                var ctor = imageGroupType.GetConstructor(new[] { typeof(int), typeof(IReadOnlyList<string>) });
+                var ctor = imageGroupType.GetConstructor(new[] {
+                    typeof(int),
+                    typeof(IReadOnlyList<string>),
+                    typeof(IReadOnlyDictionary<string, double>),
+                    typeof(IReadOnlyDictionary<string, ulong>),
+                    typeof(IReadOnlyDictionary<string, float[]>)
+                });
                 Assert.IsNotNull(ctor, "ImageGroup constructor not found.");
 
-                var group1Paths = new List<string> { "C:\\temp\\a1.jpg", "C:\\temp\\b1.jpg" };
-                var group2Paths = new List<string> { "C:\\temp\\a2.jpg", "C:\\temp\\b2.jpg" };
-                var group1 = ctor.Invoke(new object[] { 1, group1Paths.AsReadOnly() });
-                var group2 = ctor.Invoke(new object[] { 2, group2Paths.AsReadOnly() });
+                string fileA1 = CreateTempImageFile();
+                string fileB1 = CreateTempImageFile();
+                string fileA2 = CreateTempImageFile();
+                string fileB2 = CreateTempImageFile();
+                tempFiles.Add(fileA1);
+                tempFiles.Add(fileB1);
+                tempFiles.Add(fileA2);
+                tempFiles.Add(fileB2);
+
+                var group1Paths = new List<string> { fileA1, fileB1 };
+                var group1Sim = new Dictionary<string, double> { { fileA1, 1.0 }, { fileB1, 0.9 } };
+                var group1Hash = new Dictionary<string, ulong> { { fileA1, 0UL }, { fileB1, 0UL } };
+                var group2Paths = new List<string> { fileA2, fileB2 };
+                var group2Sim = new Dictionary<string, double> { { fileA2, 1.0 }, { fileB2, 0.9 } };
+                var group2Hash = new Dictionary<string, ulong> { { fileA2, 0UL }, { fileB2, 0UL } };
+
+                var group1 = ctor.Invoke(new object[] { 1, group1Paths.AsReadOnly(), group1Sim, group1Hash, null! });
+                var group2 = ctor.Invoke(new object[] { 2, group2Paths.AsReadOnly(), group2Sim, group2Hash, null! });
 
                 var groupsArray = Array.CreateInstance(imageGroupType, 2);
                 groupsArray.SetValue(group1, 0);
@@ -119,6 +168,11 @@ public class MainFormTests
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
         thread.Join();
+
+        foreach (var file in tempFiles)
+        {
+            try { File.Delete(file); } catch { }
+        }
 
         if (threadException is not null)
             Assert.Fail($"Test thread failed: {threadException}", threadException);
