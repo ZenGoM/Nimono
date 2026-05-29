@@ -6,10 +6,10 @@ internal sealed class AppSettings
 {
     public List<string> SearchFolders { get; set; } = new();
     public int SimilarityThreshold { get; set; } = 85;
-    public int WindowWidth { get; set; } = 1100;
-    public int WindowHeight { get; set; } = 750;
+    public int WindowWidth { get; set; } = 980;
+    public int WindowHeight { get; set; } = 700;
     public bool MainWindowMaximized { get; set; } = false;
-    public int CompareFormWidth { get; set; } = 900;
+    public int CompareFormWidth { get; set; } = 950;
     public int CompareFormHeight { get; set; } = 700;
     public bool CompareWindowMaximized { get; set; } = false;
     public int CompareSplitterDistance { get; set; } = 0;

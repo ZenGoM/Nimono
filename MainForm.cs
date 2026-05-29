@@ -39,6 +39,9 @@ public class MainForm : Form
     public MainForm()
     {
         InitializeComponents();
+        var exeIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+        if (exeIcon is not null)
+            Icon = exeIcon;
         _settings = SettingsStorage.Load();
 
         // ── ウィンドウサイズと最大化状態は最優先で適用する ──
@@ -89,7 +92,7 @@ public class MainForm : Form
     {
         Text = "Nimono — 似た画像をグルーピング";
         Size = new Size(1100, 750);
-        Font = new Font("Segoe UI", 9.5f);
+        Font = new Font("Segoe UI", 9.0f);
         StartPosition = FormStartPosition.CenterScreen;
         var exeIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         if (exeIcon is not null)
@@ -118,7 +121,7 @@ public class MainForm : Form
         _selectFoldersButton = new Button
         {
             Text = "フォルダー選択...",
-            Width = 140,
+            Width = 120,
             Top = 4,
             Height = 28,
         };
@@ -127,7 +130,7 @@ public class MainForm : Form
         _scanButton = new Button
         {
             Text = "スキャン開始",
-            Width = 110,
+            Width = 90,
             Top = 4,
             Height = 28,
             Enabled = false,
@@ -144,6 +147,7 @@ public class MainForm : Form
         _methodCombo = new ComboBox
         {
             Top = 6,
+            Width = 150,
             DropDownStyle = ComboBoxStyle.DropDownList,
         };
         _methodCombo.Items.AddRange(["pHash（高速）", "DINOv2 CPU", "DINOv2 GPU (DirectML)"]);
@@ -184,7 +188,7 @@ public class MainForm : Form
         _thresholdInput = new NumericUpDown
         {
             Top = 6,
-            Width = 70,
+            Width = 45,
             Minimum = 50,
             Maximum = 100,
             Value = 85,
@@ -200,8 +204,8 @@ public class MainForm : Form
 
         _clearCacheButton = new Button
         {
-            Text = "キャッシュクリア",
-            Width = 200,
+            Text = "キャッシュ",
+            Width = 120,
             Top = 4,
             Height = 28,
             Enabled = false,
@@ -220,8 +224,9 @@ public class MainForm : Form
         _cancelButton = new Button
         {
             Text = "キャンセル",
-            Width = 100,
-            Dock = DockStyle.Right,
+            Width = 85,
+            Top = 4,
+            Height = 28,
             Enabled = false,
         };
         _cancelButton.Click += (_, _) => _cts?.Cancel();
@@ -237,7 +242,8 @@ public class MainForm : Form
         thresholdLabel.Left       = x; x += TextRenderer.MeasureText(thresholdLabel.Text, this.Font).Width + ControlGap;
         _thresholdInput.Left      = x; x = _thresholdInput.Right + 4;
         pctLabel.Left             = x; x += TextRenderer.MeasureText(pctLabel.Text, this.Font).Width + GroupGap;
-        _clearCacheButton.Left    = x;
+        _clearCacheButton.Left    = x; x = _clearCacheButton.Right + ControlGap;
+        _cancelButton.Left        = x;
 
         toolPanel.Controls.Add(_selectFoldersButton);
         toolPanel.Controls.Add(_scanButton);
@@ -342,18 +348,52 @@ public class MainForm : Form
         bool isDINOv2 = _settings.SimilarityMethod is "DINOv2" or "DINOv2_DML" or "DINOv2_CUDA";
         bool useGpu   = _settings.SimilarityMethod is "DINOv2_DML" or "DINOv2_CUDA";
 
+        if (isDINOv2 && (!System.Runtime.Intrinsics.X86.Avx.IsSupported || !System.Runtime.Intrinsics.X86.Avx2.IsSupported))
+        {
+            MessageBox.Show(this,
+                "お使いのコンピュータ（または仮想マシン）の CPU は AVX / AVX2 命令をサポートしていないため、DINOv2 モードを実行できません。\n\n" +
+                "設定から「pHash」モードに変更して実行してください。",
+                "ハードウェア非対応", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
         // DINOv2 の場合はモデルが必要
         if (isDINOv2)
         {
             if (string.IsNullOrEmpty(_settings.DINOv2ModelPath) || !File.Exists(_settings.DINOv2ModelPath))
             {
-                MessageBox.Show(this,
-                    "DINOv2 モデルファイルが設定されていません。\n" +
-                    "「参照...」ボタンでモデル（.onnx）を選択してください。\n\n" +
-                    "モデルは HuggingFace の onnx-community/dinov2-small などから入手できます。",
-                    "DINOv2 モデル未設定", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
+                var dr = MessageBox.Show(this,
+                    "DINOv2 方式を使用するには、モデルファイル（`model.onnx`）が必要です。\n\n" +
+                    "HuggingFace からモデル（onnx-community/dinov2-small）をダウンロードして自動的にセットアップしますか？\n" +
+                    "（ファイルサイズ: 約 85 MB）\n\n" +
+                    "※「いいえ」を選択した場合は、手動でダウンロードして実行ファイルと同じフォルダーに配置してください。",
+                    "DINOv2 モデル未設定", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+                
+                if (dr != DialogResult.Yes) return;
+
+                _cts?.Cancel();
+                _cts = new CancellationTokenSource();
+                var downloadToken = _cts.Token;
+
+                SetScanningState(true);
+                _progressBar.Style = ProgressBarStyle.Continuous;
+                var bundledModel = Path.Combine(AppContext.BaseDirectory, "model.onnx");
+                
+                Log("モデルのダウンロード開始");
+                bool success = await DownloadModelAsync(bundledModel, downloadToken);
+                if (!success)
+                {
+                    Log("モデルのダウンロード失敗・キャンセル");
+                    _statusLabel.Text = "ダウンロードがキャンセルまたは失敗しました";
+                    SetScanningState(false);
+                    return;
+                }
+                Log("モデルのダウンロード完了");
+                
+                _settings.DINOv2ModelPath = bundledModel;
+                SaveSettings();
             }
+
             if (_embedder is null)
             {
                 if (!DINOv2Embedder.TryCreate(_settings.DINOv2ModelPath, useGpu, out var emb, out string err))
@@ -510,6 +550,67 @@ public class MainForm : Form
         {
             _progressBar.Style = ProgressBarStyle.Continuous;
             _progressBar.Value = 0;
+        }
+    }
+
+    private async Task<bool> DownloadModelAsync(string destinationPath, CancellationToken token)
+    {
+        var progress = new Progress<int>(pct => {
+            _progressBar.Value = pct;
+            _statusLabel.Text = $"DINOv2 モデルをダウンロード中... {pct}%";
+        });
+
+        try
+        {
+            await Task.Run(async () =>
+            {
+                using var client = new HttpClient();
+                string url = "https://huggingface.co/onnx-community/dinov2-small/resolve/main/onnx/model.onnx";
+                using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, token);
+                response.EnsureSuccessStatusCode();
+
+                var totalBytes = response.Content.Headers.ContentLength ?? -1L;
+                using var contentStream = await response.Content.ReadAsStreamAsync(token);
+                using var fileStream = new FileStream(destinationPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, true);
+
+                var buffer = new byte[81920];
+                long totalRead = 0;
+                int bytesRead;
+                int lastPct = -1;
+
+                while ((bytesRead = await contentStream.ReadAsync(buffer, 0, buffer.Length, token)) > 0)
+                {
+                    await fileStream.WriteAsync(buffer, 0, bytesRead, token);
+                    totalRead += bytesRead;
+
+                    if (totalBytes != -1)
+                    {
+                        int pct = (int)((totalRead * 100) / totalBytes);
+                        if (pct != lastPct)
+                        {
+                            lastPct = pct;
+                            ((IProgress<int>)progress).Report(pct);
+                        }
+                    }
+                }
+
+                if (totalBytes != -1 && totalRead < totalBytes)
+                {
+                    throw new IOException($"ダウンロードが途中で切断されました。（{totalRead} / {totalBytes} bytes）");
+                }
+            }, token);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            try { if (File.Exists(destinationPath)) File.Delete(destinationPath); } catch { }
+            return false;
+        }
+        catch (Exception ex)
+        {
+            try { if (File.Exists(destinationPath)) File.Delete(destinationPath); } catch { }
+            MessageBox.Show(this, $"モデルのダウンロードに失敗しました。\n\n{ex.Message}", "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return false;
         }
     }
 
@@ -1157,6 +1258,9 @@ public class MainForm : Form
             SetGroupPanelHeight(panel, group.Id);
 
         // Recompute tops from this group onwards
+        int panelWidth = _resultsPanel.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4;
+        if (panelWidth < 100) panelWidth = 100;
+
         bool found = false;
         int top = 0;
         foreach (var g in _groups)
@@ -1168,7 +1272,12 @@ public class MainForm : Form
                 top = _groupTops.TryGetValue(g.Id, out var t) ? t : 0;
             }
             _groupTops[g.Id] = top;
-            if (_groupPanels.TryGetValue(g.Id, out var p)) top += p.Height + 8;
+
+            int height = _groupPanels.TryGetValue(g.Id, out var p)
+                ? p.Height
+                : (_groupHeightCache.TryGetValue(g.Id, out var ch) ? ch
+                    : EstimateGroupHeight(g.Paths.Count, panelWidth));
+            top += height + 8;
         }
         int totalH = top + _resultsPanel.Padding.Bottom;
 
@@ -1201,11 +1310,11 @@ public class MainForm : Form
         {
             long sizeBytes = CacheManager.GetCacheSize();
             string sizeText = FormatFileSize(sizeBytes);
-            _clearCacheButton.Text = $"キャッシュクリア ({sizeText})";
+            _clearCacheButton.Text = $"キャッシュ ({sizeText})";
         }
         else
         {
-            _clearCacheButton.Text = "キャッシュクリア";
+            _clearCacheButton.Text = "キャッシュ";
         }
     }
 

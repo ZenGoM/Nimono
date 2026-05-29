@@ -15,3 +15,9 @@ packages/
 # OS
 Thumbs.db
 .DS_Store
+
+# Custom Outputs
+test.bin
+dist/
+pic/
+publish_output/

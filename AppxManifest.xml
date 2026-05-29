@@ -10,7 +10,7 @@
   <Identity
     Name="ZenGoM.Nimono"
     Publisher="CN=E2338FF3-89FC-4D73-967C-BC126F7A8857"
-    Version="1.0.0.0"
+    Version="1.0.1.0"
     ProcessorArchitecture="x64" />
 
   <!-- パッケージのプロパティとロゴ定義 -->

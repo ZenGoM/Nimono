@@ -9,7 +9,7 @@
     <AssemblyName>Nimono</AssemblyName>
     <RootNamespace>Nimono</RootNamespace>
     <ApplicationDefaultFont>Segoe UI, 9pt</ApplicationDefaultFont>
-    <ApplicationIcon>app.ico</ApplicationIcon>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
@@ -22,10 +22,5 @@
     <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.24.4" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Content Include="docs\model.onnx">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-  </ItemGroup>
 
 </Project>

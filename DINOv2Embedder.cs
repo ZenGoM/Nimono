@@ -67,10 +67,8 @@ internal sealed class DINOv2Embedder : IDisposable
             if (useGpu)
             {
                 // DirectML EP 用の推奨設定（公式ガイダンス）:
-                //   - GraphOptimizationLevel は BASIC まで下げる（ALL だと DML 非対応の最適化でクラッシュ）
-                //   - ExecutionMode は SEQUENTIAL（DML は内部で並列化するため OUT-OF-ORDER と相性が悪い）
-                //   - EnableMemoryPattern は false（DML は動的形状を内部で扱うため MemPattern が有害）
-                opts.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_BASIC;
+                //   - GraphOptimizationLevel は DISABLE にしてネイティブクラッシュを回避
+                opts.GraphOptimizationLevel = GraphOptimizationLevel.ORT_DISABLE_ALL;
                 opts.ExecutionMode = ExecutionMode.ORT_SEQUENTIAL;
                 opts.EnableMemoryPattern = false;
                 opts.AppendExecutionProvider_DML(0); // 失敗時は外側 catch で error にメッセージを格納

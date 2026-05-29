@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nimono - 最先端の画像類似検索・グルーピングツール</title>
+    <meta name="description" content="Nimonoは、DINOv2やpHashを利用して超高速に画像を整理・比較するWindowsデスクトップ向けアプリケーションです。">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Noto+Sans+JP:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- Background Elements -->
+    <div class="bg-shape shape-1"></div>
+    <div class="bg-shape shape-2"></div>
+    
+    <!-- Header / Navigation -->
+    <header class="glass-header">
+        <div class="container header-container">
+            <div class="logo">
+                <img src="assets/Square44x44Logo.png" alt="Nimono" class="logo-icon" style="height: 1.2em; width: auto; border-radius: 8px;"> Nimono
+            </div>
+            <nav>
+                <ul class="nav-links">
+                    <li><a href="#features">機能</a></li>
+                    <li><a href="#how-it-works">仕組み</a></li>
+                    <li><a href="#specs">仕様</a></li>
+                </ul>
+            </nav>
+            <a href="https://apps.microsoft.com/detail/9NK0KCN19QNZ?hl=ja-jp&gl=JP&ocid=pdpshare" class="btn btn-primary" target="_blank" rel="noopener noreferrer">ダウンロード</a>
+        </div>
+    </header>
+
+    <!-- Hero Section -->
+    <section class="hero">
+        <div class="container hero-container">
+            <div class="hero-content animate-on-scroll slide-up">
+                <div class="badge">Windows Desktop App</div>
+                <h1 class="hero-title">大量の画像整理を、<br><span class="text-gradient">スマートに。</span></h1>
+                <p class="hero-description">
+                    Nimonoは、AI（DINOv2）とハッシュ技術（pHash）を駆使し、
+                    類似した画像を瞬時にグルーピング。直感的なUIと強力な比較機能で、
+                    あなたの画像管理を劇的に進化させます。
+                </p>
+                <div class="hero-actions">
+                    <a href="https://apps.microsoft.com/detail/9NK0KCN19QNZ?hl=ja-jp&gl=JP&ocid=pdpshare" class="btn btn-primary btn-large" target="_blank" rel="noopener noreferrer">今すぐ始める</a>
+                    <a href="#features" class="btn btn-secondary btn-large">詳細を見る</a>
+                </div>
+            </div>
+            <div class="hero-image animate-on-scroll slide-up delay-1">
+                <div class="mockup-container">
+                    <img src="assets/hero_mockup.png" alt="Nimono Main UI" class="mockup-img">
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section id="features" class="features section-padding">
+        <div class="container">
+            <div class="section-header animate-on-scroll slide-up">
+                <h2 class="section-title">革新的な<span class="text-gradient">特徴</span></h2>
+                <p class="section-subtitle">最新のアルゴリズムと洗練されたUIが、かつてない体験を提供します。</p>
+            </div>
+            
+            <div class="features-grid">
+                <!-- Feature 1 -->
+                <div class="feature-card glass-card animate-on-scroll slide-up delay-1">
+                    <div class="feature-icon">🧠</div>
+                    <h3 class="feature-title">AI駆動の検索 (DINOv2)</h3>
+                    <p class="feature-desc">
+                        Metaの最先端AIモデル「DINOv2」を搭載。DirectMLを利用したGPUアクセラレーションにより、圧倒的な速度と精度で画像の意味的特徴を抽出し、類似画像をグループ化します。
+                    </p>
+                </div>
+                
+                <!-- Feature 2 -->
+                <div class="feature-card glass-card animate-on-scroll slide-up delay-2">
+                    <div class="feature-icon">⚡</div>
+                    <h3 class="feature-title">超高速 pHash 処理</h3>
+                    <p class="feature-desc">
+                        従来の手法である pHash もサポート。並列計算と SQLite キャッシュシステムを組み合わせることで、何万枚もの画像もあっという間に処理完了。再スキャンも一瞬です。
+                    </p>
+                </div>
+                
+                <!-- Feature 3 -->
+                <div class="feature-card glass-card animate-on-scroll slide-up delay-3">
+                    <div class="feature-icon">📊</div>
+                    <h3 class="feature-title">強力な比較ビュー</h3>
+                    <p class="feature-desc">
+                        同期ズーム対応の画像比較画面を搭載。ファイル名や解像度、サイズなどの細かな差異を赤字でハイライト表示し、どちらを残すべきか瞬時に判断可能です。
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Deep Dive: Comparison -->
+    <section class="deep-dive section-padding">
+        <div class="container deep-dive-container">
+            <div class="deep-dive-image animate-on-scroll slide-right">
+                <div class="mockup-container">
+                    <img src="assets/composite_mockup.png" alt="Nimono Comparison UI" class="mockup-img">
+                </div>
+            </div>
+            <div class="deep-dive-content animate-on-scroll slide-left">
+                <h2 class="section-title">細部まで見逃さない。<br><span class="text-gradient">究極の比較体験。</span></h2>
+                <p class="deep-dive-desc">
+                    比較画面では、基準となる画像と対象画像を常に50:50の割合で並べて表示。マウスホイールによるズームやドラッグでのパン操作は、左右で完全に同期されます。
+                </p>
+                <ul class="feature-list">
+                    <li><span class="check">✓</span> メタデータ（サイズ、日付、形式）の自動差分抽出</li>
+                    <li><span class="check">✓</span> クリック一つで基準画像の切り替え</li>
+                    <li><span class="check">✓</span> 比較しながらのワンクリック削除機能</li>
+                </ul>
+            </div>
+        </div>
+    </section>
+
+    <!-- Technical Specs Section -->
+    <section id="specs" class="specs section-padding">
+        <div class="container">
+            <div class="section-header animate-on-scroll slide-up">
+                <h2 class="section-title">技術<span class="text-gradient">仕様</span></h2>
+            </div>
+            
+            <div class="specs-grid animate-on-scroll slide-up delay-1">
+                <div class="spec-item">
+                    <h4 class="spec-label">対応OS</h4>
+                    <p class="spec-value">Windows 10 (1709以降) / 11</p>
+                </div>
+                <div class="spec-item">
+                    <h4 class="spec-label">フレームワーク</h4>
+                    <p class="spec-value">.NET 9.0 (Windows Forms)</p>
+                </div>
+                <div class="spec-item">
+                    <h4 class="spec-label">AI モデル</h4>
+                    <p class="spec-value">DINOv2 (ONNX Runtime, DirectML)</p>
+                </div>
+                <div class="spec-item">
+                    <h4 class="spec-label">データ管理</h4>
+                    <p class="spec-value">SQLite (ローカルキャッシュ)</p>
+                </div>
+                <div class="spec-item">
+                    <h4 class="spec-label">対応形式</h4>
+                    <p class="spec-value">JPG, PNG, BMP, GIF, TIFF, WebP</p>
+                </div>
+                <div class="spec-item">
+                    <h4 class="spec-label">UI仮想化</h4>
+                    <p class="spec-value">遅延パネル生成対応 (1万G+対応)</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer glass-footer">
+        <div class="container footer-container">
+            <div class="footer-logo">
+                <img src="assets/Square44x44Logo.png" alt="Nimono" class="logo-icon" style="height: 1.2em; width: auto; border-radius: 8px;"> Nimono
+            </div>
+            <p class="copyright">© 2026 Nimono Project. All rights reserved.</p>
+        </div>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>
