@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nimono ユーザーズマニュアル</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Noto+Sans+JP:wght@300;400;600;800&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        .manual-container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding-top: 140px;
+            padding-bottom: 80px;
+            color: rgba(255, 255, 255, 0.9);
+        }
+
+        .manual-section {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 40px;
+            margin-bottom: 40px;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+        }
+
+        .manual-section h2 {
+            font-size: 1.8rem;
+            margin-bottom: 24px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .manual-section h3 {
+            font-size: 1.4rem;
+            margin-top: 32px;
+            margin-bottom: 16px;
+            color: #d8b4fe;
+            /* 既存のグラデーションに合わせた色 */
+        }
+
+        .manual-section h4 {
+            font-size: 1.1rem;
+            margin-top: 24px;
+            margin-bottom: 12px;
+            color: rgba(255, 255, 255, 0.9);
+        }
+
+        .manual-section p,
+        .manual-section li {
+            line-height: 1.8;
+            margin-bottom: 16px;
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        .manual-section ul {
+            padding-left: 24px;
+            margin-bottom: 24px;
+        }
+
+        .manual-section li strong {
+            color: rgba(255, 255, 255, 0.9);
+        }
+
+        .note-box {
+            background: rgba(139, 92, 246, 0.1);
+            border-left: 4px solid #8b5cf6;
+            padding: 16px 24px;
+            border-radius: 4px;
+            margin: 24px 0;
+        }
+
+        .note-box p {
+            margin: 0;
+            color: rgba(255, 255, 255, 0.9);
+        }
+
+        code {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 0.9em;
+            color: #d8b4fe;
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Background Elements -->
+    <div class="bg-shape shape-1"></div>
+    <div class="bg-shape shape-2"></div>
+
+    <!-- Header -->
+    <header class="glass-header">
+        <div class="container header-container">
+            <div class="logo">
+                <a href="index.html"
+                    style="color: inherit; text-decoration: none; display: flex; align-items: center; gap: 8px;">
+                    <img src="assets/Square44x44Logo.png" alt="Nimono" class="logo-icon"
+                        style="height: 1.2em; width: auto; border-radius: 8px;"> Nimono
+                </a>
+            </div>
+            <nav>
+                <ul class="nav-links">
+                    <li><a href="index.html">トップへ戻る</a></li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+
+    <div class="container manual-container">
+        <div class="section-header animate-on-scroll slide-up">
+            <h1 class="hero-title" style="font-size: 2.5rem; text-align: center; margin-bottom: 16px;">Nimono <span
+                    class="text-gradient">ユーザーズマニュアル</span></h1>
+            <p class="section-subtitle" style="text-align: center; margin-bottom: 48px;">
+                「Nimono」は、PC 内のフォルダーをスキャンして似た画像を自動的にグルーピングし、不要な重複画像などを比較・整理するためのデスクトップアプリケーションです。
+            </p>
+        </div>
+
+        <div class="manual-section animate-on-scroll slide-up delay-1">
+            <h2 class="text-gradient">1. アプリの概要</h2>
+            <p>大量の写真やイラストの中から、<strong>「ほとんど同じ画像」</strong>や<strong>「リサイズ・再圧縮された類似画像」</strong>を見つけ出し、簡単な操作で比較・削除できます。</p>
+
+            <h3>主な特徴</h3>
+            <ul>
+                <li><strong>高速な画像判定</strong>: 独自のハッシュ計算（pHash方式）により、数千枚以上の画像も高速にスキャン。</li>
+                <li><strong>AIによる高度な類似度判定</strong>:
+                    Meta社が開発した自己教師あり学習モデル「DINOv2」を搭載。構図や被写体が近い画像を、人間の目に近い感覚で高精度にグルーピングできます。</li>
+                <li><strong>メモリ効率と快適な操作</strong>: スクロール時に画面内に見えている画像のみを描画する「仮想スクロール」を採用。何万枚もの画像グループも軽快に表示します。</li>
+            </ul>
+        </div>
+
+        <div class="manual-section animate-on-scroll slide-up">
+            <h2 class="text-gradient">2. システム要件とサポート形式</h2>
+            <h3>対応する画像形式</h3>
+            <ul>
+                <li><strong>JPEG</strong> (<code>.jpg</code>, <code>.jpeg</code>)</li>
+                <li><strong>PNG</strong> (<code>.png</code>)</li>
+                <li><strong>BMP</strong> (<code>.bmp</code>)</li>
+                <li><strong>GIF</strong> (<code>.gif</code>)</li>
+                <li><strong>TIFF</strong> (<code>.tiff</code>, <code>.tif</code>)</li>
+                <li><strong>WebP</strong> (<code>.webp</code>)</li>
+            </ul>
+            <div class="note-box">
+                <p><strong>NOTE:</strong>
+                    <code>Windows</code>、<code>Program Files</code>、<code>$Recycle.Bin</code>（ゴミ箱）、<code>System Volume Information</code>
+                    などの主要なシステムフォルダーは、安全およびパフォーマンス確保のため自動的にスキャン対象から除外されます。
+                </p>
+            </div>
+        </div>
+
+        <div class="manual-section animate-on-scroll slide-up">
+            <h2 class="text-gradient">3. 基本的な使い方</h2>
+
+            <h3>ステップ 1: フォルダーの選択</h3>
+            <p>まずはスキャン対象のフォルダーを登録します。</p>
+            <ol>
+                <li>アプリ画面左上の <strong>「フォルダー選択...」</strong> ボタンをクリックします。<br>
+                    <img src="assets/folder_select_btn.png" alt="フォルダー選択ボタン"
+                        style="max-width: 300px; border-radius: 8px; margin: 12px 0; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 4px 12px rgba(0,0,0,0.2); display: block;">
+                </li>
+                <li>表示されたダイアログで「追加」を押し、スキャンしたい画像が入っているフォルダーを選択して「決定」をクリックします（複数登録可能）。<br>
+                    <img src="assets/search_folder_dialog.png" alt="検索フォルダーの設定ダイアログ"
+                        style="max-width: 450px; width: 100%; border-radius: 8px; margin: 12px 0; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 4px 12px rgba(0,0,0,0.2); display: block;">
+                </li>
+            </ol>
+
+            <h3>ステップ 2: 計算方式としきい値の設定</h3>
+            <p>目的に合わせて計算方式としきい値を設定します。</p>
+            <img src="assets/method_select.png" alt="計算方式の設定画面"
+                style="max-width: 100%; border-radius: 8px; margin: 12px 0; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 4px 12px rgba(0,0,0,0.2); display: block;">
+            <ol>
+                <li><strong>計算方式</strong>:
+                    <ul>
+                        <li><strong>pHash（高速）</strong>: 標準的な類似画像検出に適しています。</li>
+                        <li><strong>DINOv2 CPU / GPU</strong>: AIモデルを使用した高精度な検出です。構図や被写体の類似性を重視する場合に選択します。</li>
+                    </ul>
+                </li>
+                <li><strong>類似度しきい値</strong>:
+                    <ul>
+                        <li>最初は <strong><code>85%</code> 〜 <code>90%</code></strong> 付近に設定して試してみてください。</li>
+                    </ul>
+                </li>
+            </ol>
+
+            <h3>ステップ 3: スキャンの実行</h3>
+            <ol>
+                <li><strong>「スキャン開始」</strong> ボタンをクリックします。<br>
+                    <img src="assets/scan_button.png" alt="スキャン開始ボタン"
+                        style="max-width: 100%; border-radius: 8px; margin: 12px 0; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 4px 12px rgba(0,0,0,0.2); display: block;">
+                </li>
+                <li>進行状況がプログレスバーに表示され、完了するとメイン画面に類似画像が一覧表示されます。<br>
+                    <img src="assets/group_mockup.png" alt="スキャン完了後の結果画面"
+                        style="max-width: 100%; border-radius: 12px; margin: 12px 0; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 8px 32px rgba(0,0,0,0.3); display: block;">
+                </li>
+            </ol>
+        </div>
+
+        <div class="manual-section animate-on-scroll slide-up">
+            <h2 class="text-gradient">4. 結果の確認と比較・整理</h2>
+            <p>スキャンが完了すると、類似画像がグループ化されて一覧表示されます。</p>
+
+            <h3>メイン画面での確認</h3>
+            <ul>
+                <li>グループごとに、類似している画像が並べて表示されます。<br>
+                    <img src="assets/group_mockup.png" alt="グループ表示例"
+                        style="max-width: 100%; border-radius: 12px; margin: 12px 0; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 8px 32px rgba(0,0,0,0.3); display: block;">
+                </li>
+                <li>1つのグループに大量の画像がある場合、画面負荷を避けるためメイン画面には最大 50 枚まで表示されます。それを超える分は <strong>「比較」</strong> 画面からすべて確認できます。
+                </li>
+            </ul>
+
+            <h3>「比較・整理」画面の操作（最重要機能）</h3>
+            <p>各グループの右上にある <strong>「比較」</strong> ボタンをクリックすると、詳細な比較画面が開きます。</p>
+            <img src="assets/compare_button.png" alt="比較ボタンの位置"
+                style="max-width: 100%; border-radius: 12px; margin: 12px 0; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 8px 32px rgba(0,0,0,0.3); display: block;">
+
+            <h4>① 左右連動ズームとパン（スクロール）</h4>
+            <ul>
+                <li>画面上部に <strong>「基準画像（左側）」</strong> と <strong>「比較対象画像（右側）」</strong> が並んで表示されます。<br>
+                    <img src="assets/composite_mockup2.png" alt="比較画面の例"
+                        style="max-width: 100%; border-radius: 12px; margin: 12px 0; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 8px 32px rgba(0,0,0,0.3); display: block;">
+                </li>
+                <li>画像上でマウスホイールを回転させると拡大・縮小（ズーム）でき、ドラッグすると表示位置を移動（パン）できます。<br>
+                    <img src="assets/sync_zoom_pan.png" alt="連動ズームとパンの説明図"
+                        style="max-width: 100%; border-radius: 12px; margin: 12px 0; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 8px 32px rgba(0,0,0,0.3); display: block;">
+                </li>
+                <li><strong>左右のズーム倍率および移動位置は自動的に同期</strong>します。これにより、別々の場所に保存された似た画像の「細部の違い」や「ピントの合い具合」を簡単に比較できます。</li>
+            </ul>
+
+            <h4>② メタデータの比較と「赤文字ハイライト」</h4>
+            <p>画像下部の情報エリアには、以下のファイル情報が表示されます。</p>
+            <img src="assets/metadata_highlight.png" alt="メタデータ表示と赤文字ハイライトの例"
+                style="max-width: 100%; border-radius: 12px; margin: 12px 0; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 8px 32px rgba(0,0,0,0.3); display: block;">
+            <ul>
+                <li>ファイル名 / 類似度 / 保存形式 / ファイルサイズ / 解像度 / 更新日付 / 保存フォルダ名</li>
+                <li>左右の画像で<strong>データが異なる部分は自動的に「赤色」で強調表示</strong>されます。どちらが高解像度か、どちらがファイルサイズが小さいかを一瞬で判断できます。</li>
+            </ul>
+
+            <h4>③ 画像の削除</h4>
+            <ul>
+                <li>各画像の下にある <strong>「削除」</strong> ボタンをクリックすると、ファイルを<strong>ゴミ箱</strong>へ移動します。</li>
+                <li>初回のみ確認ダイアログが表示されます。「次回以降確認しない」にチェックを入れることで、次回からワンクリックでサクサク削除できるようになります。<br>
+                    <img src="assets/delete_confirm_dialog.png" alt="削除の確認ダイアログ"
+                        style="max-width: 100%; border-radius: 12px; margin: 12px 0; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 8px 32px rgba(0,0,0,0.3); display: block;">
+                </li>
+            </ul>
+
+            <h4>④ 基準画像の変更（ダブルクリック）</h4>
+            <ul>
+                <li>比較画面下部には、グループ内の画像がリスト形式で一覧表示されています。</li>
+                <li>リスト内の任意の画像を <strong>ダブルクリック</strong> すると、その画像が新たな「基準画像」となり、他の画像との類似度が瞬時に再計算されてソートされます。<br>
+                    <img src="assets/change_reference_image.png" alt="基準画像のダブルクリック変更の例"
+                        style="max-width: 100%; border-radius: 12px; margin: 12px 0; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 8px 32px rgba(0,0,0,0.3); display: block;">
+                </li>
+            </ul>
+
+            <h4>⑤ 右クリックメニュー</h4>
+            <p>画像表示部やリスト部で右クリックすると、以下の操作が可能です。</p>
+            <ul>
+                <li><strong>開く</strong>: 既定の外部画像ビューアで画像を開きます。</li>
+                <li><strong>回転</strong>: 画像を90度回転します（回転した向きはアプリに保存されます）。</li>
+                <li><strong>フォルダーを開く</strong>: エクスプローラーで画像が保存されている場所をハイライトした状態で開きます。</li>
+                <li><strong>パスをコピー</strong>: ファイルの絶対パスをクリップボードにコピーします。</li>
+            </ul>
+
+            <h4>⑥ キーボードショートカット</h4>
+            <p>キーボードを使用して、比較対象（右側）の画像を素早く切り替えることができます。</p>
+            <ul>
+                <li><code>Home</code> : グループ内の最初の比較対象（2番目の画像）を表示</li>
+                <li><code>End</code> : グループ内の最後の画像を表示</li>
+                <li><code>PageUp</code> / <code>PageDown</code> : 表示する比較対象をページ単位で切り替え</li>
+            </ul>
+        </div>
+
+        <div class="manual-section animate-on-scroll slide-up">
+            <h2 class="text-gradient">5. 高度な設定とキャッシュ機能</h2>
+
+            <h3>キャッシュのクリア</h3>
+            <ul>
+                <li>スキャン速度を向上させるため、一度スキャンした画像の特徴量データは PC 内に一時保存されます。</li>
+                <li>フォルダー内の画像が大幅に変更された場合や、ストレージを解放したい場合は、上部ツールバーの <strong>「キャッシュクリア」</strong> をクリックしてください。</li>
+            </ul>
+
+            <h3>AI（DINOv2）モデルのセットアップ</h3>
+            <p>DINOv2 方式を使用するには、専用のAIモデルファイル（<code>model.onnx</code>）が必要です。<br>
+                計算方式で「DINOv2 CPU」または「DINOv2 GPU (DirectML)」を初めて選択した際に、自動的にセットアップ画面が表示されます。</p>
+            <ul>
+                <li><strong>自動ダウンロード</strong>: 画面の指示に従って「はい」を選択すると、必要なモデルファイルが自動的にダウンロードされ、セットアップが完了します（ファイルサイズ: 約
+                    84MB）。</li>
+                <li><strong>手動設定</strong>: インターネット環境がない場合や、既にファイルをお持ちの場合は、「いいえ」を選択した後に、PC内の <code>model.onnx</code>
+                    を直接指定することも可能です。</li>
+            </ul>
+
+            <div class="note-box">
+                <p><strong>TIP (GPU の使用について):</strong><br>
+                    計算方式で「DINOv2 GPU (DirectML)」を選択すると、グラフィックボードを利用して高速にAIスキャンを実行できます。これを利用するには、<strong>DirectX 12 に対応した
+                        GPU</strong> と、<strong>最新のグラフィックドライバー</strong> が必要です。動作しない場合は「DINOv2 CPU」をご利用ください。</p>
+            </div>
+        </div>
+
+        <div class="manual-section animate-on-scroll slide-up">
+            <h2 class="text-gradient">6. アプリ設定の保存場所</h2>
+            <p>ウィンドウのサイズや位置、選択したフォルダーリスト、画像の回転状態などの設定は、以下のファイルに自動的に永続化されます。</p>
+            <p><code>%LOCALAPPDATA%\Nimono\settings.json</code></p>
+            <p>（エクスプローラーのアドレスバーに上記パスを貼り付けるとフォルダーが開きます）</p>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer glass-footer">
+        <div class="container footer-container"
+            style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
+            <div class="footer-logo">
+                <img src="assets/Square44x44Logo.png" alt="Nimono" class="logo-icon"
+                    style="height: 1.2em; width: auto; border-radius: 8px;"> Nimono
+            </div>
+            <div class="footer-links" style="margin-bottom: 8px;">
+                <a href="manual.html"
+                    style="color: rgba(255,255,255,0.6); text-decoration: none; margin-right: 24px; font-size: 0.9rem; transition: color 0.2s;"
+                    onmouseover="this.style.color='#fff'"
+                    onmouseout="this.style.color='rgba(255,255,255,0.6)'">マニュアル</a>
+                <a href="privacy_policy.html"
+                    style="color: rgba(255,255,255,0.6); text-decoration: none; font-size: 0.9rem; transition: color 0.2s;"
+                    onmouseover="this.style.color='#fff'"
+                    onmouseout="this.style.color='rgba(255,255,255,0.6)'">プライバシーポリシー</a>
+            </div>
+            <p class="copyright">© 2026 Nimono Project. All rights reserved.</p>
+        </div>
+    </footer>
+
+    <!-- Scripts -->
+    <script src="script.js"></script>
+</body>
+
+</html>

@@ -1,5 +1,5 @@
 <Solution>
-  <Project Path="Nimono.csproj" />
-  <Project Path="Nimono.Tests/Nimono.Tests.csproj" />
+  <Project Path="src/Nimono/Nimono.csproj" />
+  <Project Path="src/Nimono.Tests/Nimono.Tests.csproj" />
   <Project Path="Nimono.Package/Nimono.Package.wapproj" />
 </Solution>

@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nimono プライバシーポリシー</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Noto+Sans+JP:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        .manual-container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding-top: 140px;
+            padding-bottom: 80px;
+            color: rgba(255, 255, 255, 0.9);
+        }
+        .manual-section {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 40px;
+            margin-bottom: 40px;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+        }
+        .manual-section h1 {
+            font-size: 2.2rem;
+            margin-bottom: 32px;
+            text-align: center;
+        }
+        .manual-section h2 {
+            font-size: 1.5rem;
+            margin-top: 40px;
+            margin-bottom: 20px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            color: #d8b4fe;
+        }
+        .manual-section p {
+            line-height: 1.8;
+            margin-bottom: 16px;
+            color: rgba(255, 255, 255, 0.8);
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Background Elements -->
+    <div class="bg-shape shape-1"></div>
+    <div class="bg-shape shape-2"></div>
+
+    <!-- Header / Navigation -->
+    <header class="glass-header">
+        <div class="container header-container">
+            <div class="logo">
+                <a href="index.html" style="text-decoration: none; color: inherit; display: flex; align-items: center; gap: 8px;">
+                    <img src="assets/Square44x44Logo.png" alt="Nimono" class="logo-icon" style="height: 1.2em; width: auto; border-radius: 8px;"> Nimono
+                </a>
+            </div>
+            <nav>
+                <ul class="nav-links">
+                    <li><a href="index.html">トップへ戻る</a></li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+
+    <main class="manual-container px-6">
+        <div class="manual-section animate-on-scroll slide-up">
+            <h1 class="text-gradient">プライバシーポリシー</h1>
+            <p>本プライバシーポリシーは、Nimono（以下、「本アプリ」）における情報の取り扱いについて定めたものです。</p>
+
+            <h2>1. 個人情報の収集・第三者提供について</h2>
+            <p>本アプリ（Nimono）は、ユーザーの個人情報を一切収集・取得・第三者へ送信することはありません。</p>
+            <p>本アプリ内で処理される画像データやキャッシュデータは、すべてユーザーのローカルデバイス内のみに保存され、外部に送信されることはありません。</p>
+
+            <h2>2. アプリの利用データ・クラッシュデータについて</h2>
+            <p>アプリのバグ修正や品質向上のため、Microsoft Storeが提供する標準の匿名クラッシュデータのみを参照する場合があります。このデータには個人を特定できる情報は含まれておりません。</p>
+
+            <h2>3. お問い合わせ時に取得する情報について</h2>
+            <p>お問い合わせの際にいただいたメールアドレスは、ご質問に対する返信以外の目的には使用いたしません。</p>
+
+            <h2>4. プライバシーポリシーの変更について</h2>
+            <p>本ポリシーの内容は、事前の予告なく変更される場合があります。変更後のプライバシーポリシーは、本アプリ内または公式サイト等に掲載した時点から効力を生じるものとします。</p>
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer glass-footer">
+        <div class="container footer-container" style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
+            <div class="footer-logo">
+                <img src="assets/Square44x44Logo.png" alt="Nimono" class="logo-icon" style="height: 1.2em; width: auto; border-radius: 8px;"> Nimono
+            </div>
+            <div class="footer-links" style="margin-bottom: 8px;">
+                <a href="manual.html" style="color: rgba(255,255,255,0.6); text-decoration: none; margin-right: 24px; font-size: 0.9rem; transition: color 0.2s;" onmouseover="this.style.color='#fff'" onmouseout="this.style.color='rgba(255,255,255,0.6)'">マニュアル</a>
+                <a href="privacy_policy.html" style="color: rgba(255,255,255,0.6); text-decoration: none; font-size: 0.9rem; transition: color 0.2s;" onmouseover="this.style.color='#fff'" onmouseout="this.style.color='rgba(255,255,255,0.6)'">プライバシーポリシー</a>
+            </div>
+            <p class="copyright">© 2026 Nimono Project. All rights reserved.</p>
+        </div>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>

@@ -13,9 +13,9 @@ $projectName = "Nimono"
 $publishRuntime = "win-x64"
 $publishConfig = "Release"
 $sourceDir = $PSScriptRoot
-$projectFile = Join-Path $sourceDir "$projectName.csproj"
-$manifestFile = Join-Path $sourceDir "AppxManifest.xml"
-$assetsDir = Join-Path $sourceDir "Assets"
+$projectFile = Join-Path $sourceDir "src\$projectName\$projectName.csproj"
+$manifestFile = Join-Path $sourceDir "src\$projectName\AppxManifest.xml"
+$assetsDir = Join-Path $sourceDir "src\$projectName\Assets"
 
 # Output directory configuration
 $publishOutputDir = Join-Path $sourceDir "bin\$publishConfig\net9.0-windows\$publishRuntime\publish"
