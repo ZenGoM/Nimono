@@ -8,6 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Nimono</AssemblyName>
     <RootNamespace>Nimono</RootNamespace>
+    <Version>1.0.3.0</Version>
     <ApplicationDefaultFont>Segoe UI, 9pt</ApplicationDefaultFont>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
   </PropertyGroup>

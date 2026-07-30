@@ -86,6 +86,13 @@ public class MainForm : Form
             _scanButton.Enabled = true;
             _statusLabel.Text = $"{_folders.Count} フォルダー選択中 — 「スキャン開始」を押してください";
         }
+        Shown += (_, _) =>
+        {
+            Activate();
+            BringToFront();
+            TopMost = true;
+            TopMost = false;
+        };
     }
 
     private void InitializeComponents()
