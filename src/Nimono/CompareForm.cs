@@ -27,11 +27,9 @@ internal sealed class CompareForm : Form
     private Dictionary<string, double> _similarities = null!;
     private readonly List<string> _deletedPaths = new();
 
-    private const int SHCNE_UPDATEIMAGE = 0x00008000;
-    private const uint SHCNF_DWORD = 0x00000003;
-
+    // ゴミ箱アイコン（空／満杯）の再描画をシェルに要求する専用 API
     [System.Runtime.InteropServices.DllImport("shell32.dll")]
-    private static extern void SHChangeNotify(int wEventId, uint uFlags, IntPtr dwItem1, IntPtr dwItem2);
+    private static extern int SHUpdateRecycleBinIcon();
 
     public IReadOnlyList<string> DeletedPaths => _deletedPaths;
 
@@ -489,7 +487,7 @@ internal sealed class CompareForm : Form
                 Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
 
             // ゴミ箱のアイコンを更新するようシェルに通知
-            SHChangeNotify(SHCNE_UPDATEIMAGE, SHCNF_DWORD, IntPtr.Zero, IntPtr.Zero);
+            SHUpdateRecycleBinIcon();
         }
         catch (Exception ex)
         {
