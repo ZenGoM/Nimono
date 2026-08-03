@@ -18,7 +18,9 @@ $manifestFile = Join-Path $sourceDir "src\$projectName\AppxManifest.xml"
 $assetsDir = Join-Path $sourceDir "src\$projectName\Assets"
 
 # Output directory configuration
-$publishOutputDir = Join-Path $sourceDir "bin\$publishConfig\net9.0-windows\$publishRuntime\publish"
+# Pin the publish directory under the project and pass it to dotnet publish via -o.
+# (Relying on the default output path packaged stale binaries after the project moved to src\.)
+$publishOutputDir = Join-Path $sourceDir "src\$projectName\bin\$publishConfig\net9.0-windows\$publishRuntime\publish"
 $distDir = Join-Path $sourceDir "dist"
 $msixPath = Join-Path $distDir "$projectName.msix"
 
@@ -32,7 +34,22 @@ if (-not (Test-Path $projectFile)) {
     throw "Project file not found: $projectFile"
 }
 
-dotnet publish $projectFile -c $publishConfig -r $publishRuntime --self-contained true -p:PublishReadyToRun=true
+# Clean the publish directory so no stale artifacts survive into the package
+if (Test-Path $publishOutputDir) {
+    Remove-Item -Path $publishOutputDir -Recurse -Force
+}
+
+dotnet publish $projectFile -c $publishConfig -r $publishRuntime --self-contained true -p:PublishReadyToRun=true -o $publishOutputDir
+if ($LASTEXITCODE -ne 0) {
+    throw "dotnet publish failed with exit code $LASTEXITCODE."
+}
+
+$publishedExe = Join-Path $publishOutputDir "$projectName.exe"
+if (-not (Test-Path $publishedExe)) {
+    throw "Publish output not found: $publishedExe"
+}
+$builtVersion = (Get-Item $publishedExe).VersionInfo.FileVersion
+Write-Host "Published: $publishedExe (version $builtVersion)" -ForegroundColor Gray
 
 # 2. Copy manifest and assets
 Write-Host "[2/4] Copying manifest and assets to publish directory..." -ForegroundColor Yellow
@@ -42,6 +59,18 @@ if (-not (Test-Path $manifestFile)) {
 }
 if (-not (Test-Path $assetsDir)) {
     throw "Assets directory not found."
+}
+
+# A manifest/executable version mismatch means we are about to package stale binaries
+$manifestXml = New-Object System.Xml.XmlDocument
+$manifestXml.Load($manifestFile)
+$identityNode = $manifestXml.SelectSingleNode("/*[local-name()='Package']/*[local-name()='Identity']")
+if (-not $identityNode) {
+    throw "<Identity> element not found in $manifestFile."
+}
+$manifestVersion = $identityNode.Version
+if ($manifestVersion -ne $builtVersion) {
+    throw "Version mismatch: AppxManifest.xml is $manifestVersion but $projectName.exe is $builtVersion. Check <Version> in $projectName.csproj."
 }
 
 Copy-Item -Path $manifestFile -Destination $publishOutputDir -Force
@@ -71,6 +100,9 @@ if (Test-Path $msixPath) {
 }
 
 & $makeappx pack /d $publishOutputDir /p $msixPath /o
+if ($LASTEXITCODE -ne 0) {
+    throw "makeappx pack failed with exit code $LASTEXITCODE."
+}
 Write-Host "MSIX package created at: $msixPath" -ForegroundColor Green
 
 # 4. Self-signing (Optional)
