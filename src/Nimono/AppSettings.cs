@@ -18,6 +18,11 @@ internal sealed class AppSettings
     public string SimilarityMethod { get; set; } = "pHash"; // "pHash", "DINOv2", "DINOv2_DML"（旧 "DINOv2_CUDA" も DML として扱う）
     public string DINOv2ModelPath { get; set; } = "";
     public List<int> CompareListColumnWidths { get; set; } = new();
+    // キャッシュ DB を置くフォルダー。空なら既定の場所（%LOCALAPPDATA%\Nimono）
+    public string CacheFolder { get; set; } = "";
+    // ゴミ箱への移動を拒否するクラウド同期プロバイダー名。削除時に最初から完全削除の確認を出す。
+    // 移動が 0x17B で失敗したプロバイダーはここに追加される
+    public List<string> NoRecycleProviders { get; set; } = new() { "iCloudPhotos" };
 }
 
 internal static class SettingsStorage

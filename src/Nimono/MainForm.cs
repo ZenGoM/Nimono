@@ -6,6 +6,9 @@ public class MainForm : Form
 {
     private const int ThumbnailSize = 140;
 
+    // サムネイル枠の枠線（FixedSingle で上下左右 1px）。サムネイル画像は枠線の内側の高さで作る
+    private const int ThumbnailBorder = 2;
+
     // メインビューに表示するグループあたりのサムネイル最大数。
     // これを超えるグループは先頭 N 枚のみ描画し、残りは「比較」画面で確認する。
     // 巨大グループ（数千〜数万枚）をそのまま描画すると 1 サムネイルあたり ~5 USER ハンドル
@@ -15,6 +18,14 @@ public class MainForm : Form
 
     private readonly List<string> _folders = new();
     private readonly List<Bitmap> _allocatedThumbnails = new();
+
+    // 画像ヘッダー（縦横・EXIF の向き・日付）の先読み結果。null は GDI+ で読めなかったファイル
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, ImageHeader?> _headerCache =
+        new(StringComparer.OrdinalIgnoreCase);
+    private CancellationTokenSource? _headerPrefetchCts;
+
+    // 直近のスキャンで対象にしたファイル数（ステータスバーの「（N 件をスキャン）」に使う）
+    private int _scannedFileCount;
     private readonly List<ImageGroup> _groups = new();
     private readonly Dictionary<int, FlowLayoutPanel> _groupFlows = new();
     private readonly Dictionary<int, Panel> _groupPanels = new();
@@ -30,7 +41,7 @@ public class MainForm : Form
     private Button _cancelButton = null!;
     private NumericUpDown _thresholdInput = null!;
     private ComboBox _methodCombo = null!;
-    private Label _statusLabel = null!;
+    private StatusText _statusLabel = null!;
     private ProgressBar _progressBar = null!;
     private VirtualScrollPanel _resultsPanel = null!;
     private ToolTip _toolTip = null!;
@@ -70,6 +81,7 @@ public class MainForm : Form
             "DINOv2"                       => "DINOv2 CPU",
             _                              => "pHash（高速）",
         };
+        CacheManager.UseFolder(_settings.CacheFolder);
         UpdateClearCacheButton();
         ResizeEnd += (_, _) => { SaveSettings(); RecalculateAllPanelPositions(); };
         var prevState = WindowState;
@@ -82,16 +94,17 @@ public class MainForm : Form
         };
         FormClosed += (_, _) => { _embedder?.Dispose(); _cts?.Cancel(); };
         if (_folders.Count > 0)
-        {
             _scanButton.Enabled = true;
-            _statusLabel.Text = $"{_folders.Count} フォルダー選択中 — 「スキャン開始」を押してください";
-        }
         Shown += (_, _) =>
         {
             Activate();
             BringToFront();
             TopMost = true;
             TopMost = false;
+
+            // 前回のフォルダーが選択済みなら、起動と同時にスキャンを始める（キャッシュが効くためすぐ終わる）
+            if (_folders.Count > 0)
+                Scan_Click(this, EventArgs.Empty);
         };
     }
 
@@ -212,12 +225,12 @@ public class MainForm : Form
         _clearCacheButton = new Button
         {
             Text = "キャッシュ",
-            Width = 120,
             Top = 4,
             Height = 28,
             Enabled = false,
         };
-        _clearCacheButton.Click += (_, _) =>
+        var cacheMenu = new ContextMenuStrip();
+        var clearCacheItem = new ToolStripMenuItem("キャッシュをクリア...", null, (_, _) =>
         {
             var dr = MessageBox.Show(this, "キャッシュをクリアしますか？\n（次回のスキャンに時間がかかるようになります）",
                 "確認", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
@@ -226,7 +239,34 @@ public class MainForm : Form
                 CacheManager.ClearCache();
                 UpdateClearCacheButton();
             }
+        });
+        var changeCacheFolderItem = new ToolStripMenuItem("キャッシュの場所を変更...", null,
+            async (_, _) => await ChangeCacheFolderAsync(null));
+        var resetCacheFolderItem = new ToolStripMenuItem("キャッシュの場所を既定に戻す", null,
+            async (_, _) => await ChangeCacheFolderAsync(CacheManager.DefaultFolder));
+        var openCacheFolderItem = new ToolStripMenuItem("キャッシュの場所を開く", null, (_, _) =>
+        {
+            try
+            {
+                Directory.CreateDirectory(CacheManager.DbFolder);
+                Process.Start(new ProcessStartInfo("explorer.exe", $"\"{CacheManager.DbFolder}\"") { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"フォルダーを開けませんでした。\n{ex.Message}", "エラー",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        });
+        cacheMenu.Items.AddRange([changeCacheFolderItem, resetCacheFolderItem, openCacheFolderItem,
+            new ToolStripSeparator(), clearCacheItem]);
+        cacheMenu.Opening += (_, _) =>
+        {
+            clearCacheItem.Enabled = CacheManager.HasCacheData();
+            resetCacheFolderItem.Enabled = !CacheManager.IsSameFolder(CacheManager.DbFolder, CacheManager.DefaultFolder);
+            changeCacheFolderItem.ToolTipText = CacheManager.DbFolder;
+            openCacheFolderItem.ToolTipText = CacheManager.DbFolder;
         };
+        _clearCacheButton.Click += (_, _) => cacheMenu.Show(_clearCacheButton, new Point(0, _clearCacheButton.Height));
 
         _cancelButton = new Button
         {
@@ -249,6 +289,8 @@ public class MainForm : Form
         thresholdLabel.Left       = x; x += TextRenderer.MeasureText(thresholdLabel.Text, this.Font).Width + ControlGap;
         _thresholdInput.Left      = x; x = _thresholdInput.Right + 4;
         pctLabel.Left             = x; x += TextRenderer.MeasureText(pctLabel.Text, this.Font).Width + GroupGap;
+        // サイズ表記が付いても切れないよう、想定される最長のテキストで幅を決める
+        _clearCacheButton.Width   = TextRenderer.MeasureText("キャッシュ (9999.9 MB)", this.Font).Width + 24;
         _clearCacheButton.Left    = x; x = _clearCacheButton.Right + ControlGap;
         _cancelButton.Left        = x;
 
@@ -286,10 +328,10 @@ public class MainForm : Form
             Minimum = 0,
             Maximum = 100,
         };
-        _statusLabel = new Label
+        // 標準の Label だと、GPU で計算中に文言を書き換えるたびに途中で切れてちらつくため、StatusText で描く
+        _statusLabel = new StatusText
         {
             Dock = DockStyle.Fill,
-            TextAlign = ContentAlignment.MiddleLeft,
             Text = "フォルダーを選択してください",
         };
         statusPanel.Controls.Add(_statusLabel);
@@ -343,6 +385,64 @@ public class MainForm : Form
         }
 
         SettingsStorage.Save(_settings);
+    }
+
+    /// <summary>
+    /// キャッシュの場所を変える。<paramref name="folder"/> が null ならフォルダーを選んでもらう。
+    /// 今のキャッシュは移動先へ移す（移動先に既にあれば、どちらを使うか聞く）。
+    /// </summary>
+    private async Task ChangeCacheFolderAsync(string? folder)
+    {
+        if (folder is null)
+        {
+            using var dlg = new FolderBrowserDialog
+            {
+                Description = "キャッシュを置くフォルダーを選んでください",
+                UseDescriptionForTitle = true,
+                InitialDirectory = CacheManager.DbFolder,
+                ShowNewFolderButton = true,
+            };
+            if (dlg.ShowDialog(this) != DialogResult.OK) return;
+            folder = dlg.SelectedPath;
+        }
+        if (CacheManager.IsSameFolder(folder, CacheManager.DbFolder)) return;
+
+        bool moveExisting = CacheManager.HasCacheFileIn(CacheManager.DbFolder);
+        if (moveExisting && CacheManager.HasCacheFileIn(folder))
+        {
+            var dr = MessageBox.Show(this,
+                $"移動先には既にキャッシュがあります。\n{folder}\n\n" +
+                "［はい］今のキャッシュで上書きする\n［いいえ］移動先のキャッシュをそのまま使う（今のキャッシュは元の場所に残します）",
+                "キャッシュの場所を変更", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+            if (dr == DialogResult.Cancel) return;
+            moveExisting = dr == DialogResult.Yes;
+        }
+
+        // キャッシュが大きいと別ドライブへの移動に時間がかかるため、UI を止めずに移す
+        _selectFoldersButton.Enabled = false;
+        _scanButton.Enabled = false;
+        _clearCacheButton.Enabled = false;
+        UseWaitCursor = true;
+        _statusLabel.Text = moveExisting ? "キャッシュを移動中..." : "キャッシュの場所を変更中...";
+        try
+        {
+            await Task.Run(() => CacheManager.ChangeFolder(folder, moveExisting));
+            _settings.CacheFolder = CacheManager.IsSameFolder(folder, CacheManager.DefaultFolder) ? "" : folder;
+            SaveSettings();
+            _statusLabel.Text = $"キャッシュの場所: {folder}";
+            Log($"キャッシュの場所を変更: {folder}（移動: {moveExisting}）");
+        }
+        catch (Exception ex)
+        {
+            _statusLabel.Text = "キャッシュの場所を変更できませんでした";
+            MessageBox.Show(this, $"キャッシュの場所を変更できませんでした。\n{ex.Message}", "エラー",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            UseWaitCursor = false;
+            SetScanningState(false);
+        }
     }
 
 
@@ -428,7 +528,8 @@ public class MainForm : Form
         double threshold = (double)_thresholdInput.Value / 100.0;
         var folders = _folders.ToList();
 
-        var progress = new Progress<GroupingProgress>(OnProgress);
+        // 通知が多すぎると UI スレッドが捌き切れず再描画が止まるため、間引いて届ける
+        var progress = new ThrottledProgress(OnProgress, TimeSpan.FromMilliseconds(50));
 
         try
         {
@@ -452,6 +553,9 @@ public class MainForm : Form
             _statusLabel.Text = "キャッシュを読み込み中...";
             Log("キャッシュ読み込み開始");
             await CacheManager.LoadCacheAsync(files);
+            // DINOv2 の CPU / GPU は同じ埋め込みキャッシュを使うため、グループキャッシュも共通にする
+            string groupCacheMode = isDINOv2 ? "DINOv2" : "pHash";
+            var groupCache = await CacheManager.LoadGroupCacheAsync(groupCacheMode);
             Log("キャッシュ読み込み完了");
 
             // 2) 特徴量計算
@@ -460,19 +564,21 @@ public class MainForm : Form
 
             IReadOnlyList<ImageGroup> groups;
             IReadOnlyList<string> newPaths;
+            IReadOnlyList<string> groupedPaths;
             if (isDINOv2 && _embedder is not null)
             {
                 Log("DINOv2埋め込み計算開始");
                 var (embeddings, embNewPaths) = await Task.Run(
                     () => ImageGrouper.ComputeEmbeddings(files, _embedder, progress, token), token);
                 newPaths = embNewPaths;
+                groupedPaths = embeddings.Select(e => e.Path).ToList();
                 Log($"DINOv2埋め込み計算完了: {embeddings.Count}件");
 
                 token.ThrowIfCancellationRequested();
 
                 Log("DINOv2グルーピング開始");
                 groups = await Task.Run(
-                    () => ImageGrouper.GroupByEmbedding(embeddings, threshold, progress, token), token);
+                    () => ImageGrouper.GroupByEmbedding(embeddings, threshold, groupCache, progress, token), token);
                 Log($"DINOv2グルーピング完了: {groups.Count}グループ");
             }
             else
@@ -481,13 +587,14 @@ public class MainForm : Form
                 var (entries, hashNewPaths) = await Task.Run(
                     () => ImageGrouper.ComputeHashes(files, progress, token), token);
                 newPaths = hashNewPaths;
+                groupedPaths = entries.Select(e => e.Path).ToList();
                 Log($"pHashハッシュ計算完了: {entries.Count}件");
 
                 token.ThrowIfCancellationRequested();
 
                 Log("pHashグルーピング開始");
                 groups = await Task.Run(
-                    () => ImageGrouper.Group(entries, threshold, progress, token), token);
+                    () => ImageGrouper.Group(entries, threshold, groupCache, progress, token), token);
                 Log($"pHashグルーピング完了: {groups.Count}グループ");
             }
 
@@ -496,6 +603,7 @@ public class MainForm : Form
             Log("キャッシュ保存開始");
             _statusLabel.Text = "キャッシュを保存中...";
             await CacheManager.SaveCacheAsync(newPaths);
+            await CacheManager.SaveGroupCacheAsync(groupCacheMode, threshold, groupedPaths, groups);
             Log("キャッシュ保存完了");
 
             // 4) 表示
@@ -503,10 +611,8 @@ public class MainForm : Form
             RenderGroups(groups);
             Log("結果表示完了");
 
-            int dupes = groups.Sum(g => g.Paths.Count);
-            _statusLabel.Text = groups.Count == 0
-                ? $"似た画像は見つかりませんでした（{files.Count:N0} 件をスキャン）"
-                : $"{groups.Count:N0} グループ / {dupes:N0} 枚（{files.Count:N0} 件をスキャン）";
+            _scannedFileCount = files.Count;
+            UpdateResultStatus();
         }
         catch (OperationCanceledException)
         {
@@ -623,6 +729,9 @@ public class MainForm : Form
 
     private void ClearResults()
     {
+        _headerPrefetchCts?.Cancel();
+        _headerPrefetchCts = null;
+        _headerCache.Clear();
         _resultsPanel.SuspendLayout();
         _resultsPanel.Controls.Clear();
         foreach (var p in _groupPanels.Values)
@@ -658,6 +767,33 @@ public class MainForm : Form
         }
         _resultsPanel.AutoScrollMinSize = new Size(0, top + _resultsPanel.Padding.Bottom);
         UpdateVisibleGroups();
+        StartHeaderPrefetch(groups);
+    }
+
+    /// <summary>
+    /// 表示順に全グループの画像ヘッダーを裏で先読みする。
+    ///
+    /// パネル生成時にはカードの大きさを決めるためヘッダーが要る。HDD ではまだ読んでいないファイルの
+    /// ヘッダー読み取りにシークが伴い、裏のサムネイル生成とディスクを取り合って 1 件数十〜数百 ms かかるため、
+    /// スクロールより先に読んでおいて UI スレッドでディスクを待たないようにする。
+    /// 1 スレッドで順に読む（HDD で並列に読むとシークが増えてかえって遅くなる）。
+    /// </summary>
+    private void StartHeaderPrefetch(IReadOnlyList<ImageGroup> groups)
+    {
+        _headerPrefetchCts?.Cancel();
+        var cts = new CancellationTokenSource();
+        _headerPrefetchCts = cts;
+        var paths = groups.SelectMany(g => g.Paths.Take(MaxThumbnailsPerGroup)).ToList();
+
+        _ = Task.Run(() =>
+        {
+            foreach (var path in paths)
+            {
+                if (cts.IsCancellationRequested) return;
+                if (_headerCache.ContainsKey(path)) continue;
+                _headerCache.TryAdd(path, TryReadHeader(path));
+            }
+        }, cts.Token);
     }
 
     /// <summary>
@@ -904,7 +1040,7 @@ public class MainForm : Form
             TextAlign = ContentAlignment.MiddleLeft,
             Padding = new Padding(8, 0, 0, 0),
         };
-        var compareButton = new Button
+        var compareButton = new NonFocusableButton
         {
             Text = "比較",
             Dock = DockStyle.Right,
@@ -924,7 +1060,24 @@ public class MainForm : Form
             f.ShowDialog(this);
             SyncGroupFromCompareForm(f, group.Id);
         };
+        var deleteOthersButton = new NonFocusableButton
+        {
+            Text = "基準以外を削除",
+            Dock = DockStyle.Right,
+            Width = TextRenderer.MeasureText("基準以外を削除", new Font("Segoe UI", 8.5f)).Width + 20,
+            FlatStyle = FlatStyle.Flat,
+            ForeColor = Color.White,
+            BackColor = Color.FromArgb(45, 75, 125),
+            Font = new Font("Segoe UI", 8.5f),
+            Cursor = Cursors.Hand,
+        };
+        deleteOthersButton.FlatAppearance.BorderColor = Color.FromArgb(80, 110, 160);
+        deleteOthersButton.FlatAppearance.BorderSize = 0;
+        deleteOthersButton.Click += (_, _) => DeleteAllExceptReference(group.Id);
+
+        // Dock は後から追加したものほど外側に置かれる。比較を右端、その左に「基準以外を削除」を並べる
         header.Controls.Add(headerLabel);
+        header.Controls.Add(deleteOthersButton);
         header.Controls.Add(compareButton);
 
         var flow = new FlowLayoutPanel
@@ -946,7 +1099,7 @@ public class MainForm : Form
         for (int i = 0; i < displayCount; i++)
         {
             var path = group.Paths[i];
-            var thumb = CreateThumbnail(path, group.Similarities[path], group.Id, i == 0);
+            var thumb = CreateThumbnail(path, group.Similarities[path], group.Id, i == 0 ? null : group.Paths[0]);
             flow.Controls.Add(thumb);
         }
         if (totalCount > displayCount)
@@ -974,45 +1127,66 @@ public class MainForm : Form
         return container;
     }
 
-    private Control CreateThumbnail(string path, double similarity, int groupId, bool isReference)
+    /// <summary>カードの文字欄に出す各項目。基準と比べて違う部分を赤くするため、項目ごとに持つ。</summary>
+    private readonly record struct CardInfo(
+        string FileName, string Format, string Size, string Resolution, string Date, string DirPath);
+
+    private CardInfo ReadCardInfo(string path, ImageHeader? header)
     {
-        var (bmp, originalSize) = TryLoadThumbnail(path);
-
-        // 保存済みの回転を適用
-        if (bmp != null && _settings.ThumbnailRotations.TryGetValue(path, out int savedRot) && savedRot > 0)
-        {
-            var rotType = savedRot switch
-            {
-                1 => RotateFlipType.Rotate90FlipNone,
-                2 => RotateFlipType.Rotate180FlipNone,
-                _ => RotateFlipType.Rotate270FlipNone,
-            };
-            bmp.RotateFlip(rotType);
-        }
-
         var fi = new FileInfo(path);
-        string formatText = fi.Extension.TrimStart('.').ToUpperInvariant();
-        string sizeText = FormatFileSize(fi.Length);
-        string resText = originalSize != Size.Empty
-            ? $"{originalSize.Width}×{originalSize.Height}"
-            : "—";
-        string dateText = fi.LastWriteTime.ToString("yyyy/MM/dd");
-        // ファイル名を除いたディレクトリパスのみ表示（比較画面と統一）
-        string dirPath = Path.GetDirectoryName(path) ?? path;
+        var originalSize = header?.Size ?? Size.Empty;
+        var date = header?.Date ?? ImageDate.Read(path);
+        return new CardInfo(
+            Path.GetFileName(path),
+            fi.Extension.TrimStart('.').ToUpperInvariant(),
+            FormatFileSize(fi.Length),
+            originalSize != Size.Empty ? $"{originalSize.Width}×{originalSize.Height}" : "—",
+            date.ToString("yyyy/MM/dd"),
+            // ファイル名を除いたディレクトリパスのみ表示（比較画面と統一）
+            Path.GetDirectoryName(path) ?? path);
+    }
 
-        const int SimLabelHeight = 16;
+    /// <param name="referencePath">グループの基準画像。基準と違う部分を赤で表示する。自身が基準なら null</param>
+    private Control CreateThumbnail(string path, double similarity, int groupId, string? referencePath)
+    {
+        bool isReference = referencePath == null;
+        // ヘッダーだけ読んでカードの大きさ・情報欄を決める（1 件 1ms 程度）。
+        // サムネイル画像の生成（1 件 150ms 程度）は裏で行い、できしだい差し込む（LoadThumbnailInBackground）
+        // 先読み済みならそれを使う。まだなら（スクロールバーで先まで飛んだ場合など）ここで読む
+        var header = _headerCache.GetOrAdd(path, TryReadHeader);
+        var originalSize = header?.Size ?? Size.Empty;
+        _settings.ThumbnailRotations.TryGetValue(path, out int savedRot);
+
+        // 表示時の縦横（EXIF の向きと保存済みの回転を反映）。サムネイルが届く前から、この大きさで枠を取る
+        var displaySize = originalSize;
+        if (header is { } h && ImageOrientation.SwapsSide(h.Orientation) != (savedRot % 2 == 1))
+            displaySize = new Size(originalSize.Height, originalSize.Width);
+
+        var info = ReadCardInfo(path, header);
+        CardInfo? refInfo = referencePath != null
+            ? ReadCardInfo(referencePath, _headerCache.GetOrAdd(referencePath, TryReadHeader))
+            : null;
+
+        const int SimLabelHeight = 18;
         const int PicTop = 4 + SimLabelHeight;
 
         var infoFont = new Font("Segoe UI", 7.5f);
-        string infoText = $"{formatText} · {sizeText}\n{resText}\n{dateText}\n{dirPath}";
-        int infoHeight = TextRenderer.MeasureText(
-            infoText, infoFont, new Size(ThumbnailSize, int.MaxValue),
-            TextFormatFlags.WordBreak).Height + 2;
+        // 比較画面と同じく、ファイル名・フォルダーは文字単位、それ以外は項目単位で基準と比べる
+        var infoLines = new List<IReadOnlyList<DiffRun>>
+        {
+            new[]
+            {
+                DiffText.Field(info.Format, refInfo?.Format),
+                new DiffRun(" · ", false),
+                DiffText.Field(info.Size, refInfo?.Size),
+            },
+            new[] { DiffText.Field(info.Resolution, refInfo?.Resolution) },
+            new[] { DiffText.Field(info.Date, refInfo?.Date) },
+            DiffText.CharDiff(info.DirPath, refInfo?.DirPath).ToList(),
+        };
 
         var wrap = new Panel
         {
-            Width = ThumbnailSize + 8,
-            Height = PicTop + ThumbnailSize + 24 + infoHeight + 6,
             Margin = new Padding(4),
             BackColor = Color.White,
         };
@@ -1024,54 +1198,67 @@ public class MainForm : Form
             Text = isReference ? "【基準】" : $"類似度: {similarity:P0}",
             Left = 4,
             Top = 4,
-            Width = ThumbnailSize,
             Height = SimLabelHeight,
             TextAlign = ContentAlignment.MiddleLeft,
-            Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
+            Font = new Font("Segoe UI", 9f, FontStyle.Bold),
             ForeColor = Color.FromArgb(60, 90, 140),
         };
 
         var pic = new PictureBox
         {
-            Width = ThumbnailSize,
             Height = ThumbnailSize,
             Left = 4,
             Top = PicTop,
-            SizeMode = PictureBoxSizeMode.Zoom,
+            // 枠の内側をサムネイルと同じ縦横比にそろえる（LayoutCard）ため、Zoom の丸めで隙間が出ないよう引き伸ばしで描く
+            SizeMode = PictureBoxSizeMode.StretchImage,
             BackColor = Color.FromArgb(230, 230, 235),
             BorderStyle = BorderStyle.FixedSingle,
             Cursor = Cursors.Hand,
         };
 
-        if (bmp != null)
-        {
-            pic.Image = bmp;
-            _allocatedThumbnails.Add(bmp);
-        }
+        if (header != null)
+            LoadThumbnailInBackground(path, pic, savedRot);
 
-        var nameLabel = new Label
+        var nameLabel = new DiffLabel
         {
-            Text = Path.GetFileName(path),
+            Lines = new[] { DiffText.CharDiff(info.FileName, refInfo?.FileName).ToList() },
+            SingleLine = true,
             Left = 4,
             Top = PicTop + ThumbnailSize + 6,
-            Width = ThumbnailSize,
             Height = 18,
-            AutoEllipsis = true,
-            TextAlign = ContentAlignment.MiddleLeft,
             Font = new Font("Segoe UI", 8.25f),
+            ForeColor = SystemColors.ControlText,
         };
 
-        var infoLabel = new Label
+        var infoLabel = new DiffLabel
         {
-            Text = infoText,
+            Lines = infoLines,
             Left = 4,
             Top = PicTop + ThumbnailSize + 24,
-            Width = ThumbnailSize,
-            Height = infoHeight,
-            TextAlign = ContentAlignment.TopLeft,
             Font = infoFont,
             ForeColor = Color.FromArgb(100, 100, 100),
         };
+
+        // 画像の枠は縦幅を ThumbnailSize に固定し、横幅は画像の縦横比なりにする（上下に余白を出さない）。
+        // カードの幅は枠の横幅と ThumbnailSize の大きい方（縦長の画像でも文字欄が細くなりすぎないように）。
+        void LayoutCard()
+        {
+            // 枠線の内側の高さに合わせて横幅を決める。回転していなければサムネイルと同じ大きさになり、等倍で描かれる
+            const int innerHeight = ThumbnailSize - ThumbnailBorder;
+            int picWidth = displaySize.Height > 0
+                ? Math.Max(1, (int)Math.Round((double)displaySize.Width * innerHeight / displaySize.Height)) + ThumbnailBorder
+                : ThumbnailSize;
+            int contentWidth = Math.Max(picWidth, ThumbnailSize);
+            int infoHeight = infoLabel.MeasureHeight(contentWidth) + 2;
+
+            pic.Width = picWidth;
+            simLabel.Width = contentWidth;
+            nameLabel.Width = contentWidth;
+            infoLabel.Width = contentWidth;
+            infoLabel.Height = infoHeight;
+            wrap.Size = new Size(contentWidth + 8, PicTop + ThumbnailSize + 24 + infoHeight + 6);
+        }
+        LayoutCard();
 
         _toolTip.SetToolTip(pic, path);
         _toolTip.SetToolTip(nameLabel, path);
@@ -1091,6 +1278,10 @@ public class MainForm : Form
             bmpCurrent.Dispose();
             pic.Image = rotated;
             _allocatedThumbnails.Add(rotated);
+            displaySize = new Size(displaySize.Height, displaySize.Width);
+            LayoutCard();
+            // カードの幅が変わると 1 行に並ぶ枚数が変わり、グループの高さも変わりうる
+            RecalculateAllPanelPositions();
 
             _settings.ThumbnailRotations.TryGetValue(path, out int prevRot);
             int newRot = (prevRot + 1) % 4;
@@ -1127,24 +1318,10 @@ public class MainForm : Form
 
     private static ImageGroup RecalculateGroup(ImageGroup group, string referencePath)
     {
-        Dictionary<string, double> newSimilarities;
-
-        if (group.Embeddings is { Count: > 0 } embs && embs.ContainsKey(referencePath))
-        {
-            // DINOv2: コサイン類似度で再計算
-            var refEmb = embs[referencePath];
-            newSimilarities = embs.ToDictionary(
-                kv => kv.Key,
-                kv => (double)DINOv2Embedder.CosineSimilarity(refEmb, kv.Value));
-        }
-        else if (group.Hashes.TryGetValue(referencePath, out ulong refHash))
-        {
-            // pHash: ハミング距離で再計算
-            newSimilarities = group.Hashes.ToDictionary(
-                kv => kv.Key,
-                kv => ImageHasher.Similarity(refHash, kv.Value));
-        }
-        else return group;
+        // 向きが違うだけの画像は基準の向きにそろえて比べる（グルーピング・比較画面と同じ計算）
+        var matches = ImageGrouper.MatchToReference(referencePath, group.Paths, group.Hashes, group.Embeddings);
+        if (matches is null) return group;
+        var newSimilarities = matches.ToDictionary(kv => kv.Key, kv => kv.Value.Similarity);
 
         // referencePath を必ず先頭に置く（同一スコアの画像との不安定ソートを防ぐ）
         var newPaths = newSimilarities
@@ -1154,6 +1331,42 @@ public class MainForm : Form
             .Prepend(referencePath)
             .ToList();
         return group with { Paths = newPaths, Similarities = newSimilarities };
+    }
+
+    /// <summary>
+    /// グループの基準画像だけを残し、ほかの画像をまとめて削除する（表示しきれていない画像も含む）。
+    /// すべて消えればグループごと取り除き、一部が残れば（中止・失敗）残りでグループを作り直す。
+    /// </summary>
+    private void DeleteAllExceptReference(int groupId)
+    {
+        int groupIdx = _groups.FindIndex(g => g.Id == groupId);
+        if (groupIdx < 0) return;
+        var group = _groups[groupIdx];
+
+        string referencePath = group.Paths[0];
+        var deleted = new FileDeleter(this, _settings)
+            .DeleteAllExceptReference(referencePath, group.Paths.Skip(1).ToList());
+        if (deleted.Count == 0) return;
+
+        var deletedSet = deleted.ToHashSet();
+        var remaining = group.Paths.Where(p => !deletedSet.Contains(p)).ToList();
+        if (remaining.Count < 2)
+        {
+            RemoveGroupAt(groupIdx);
+            return;
+        }
+
+        var updated = group with
+        {
+            Paths = remaining,
+            Similarities = remaining.ToDictionary(p => p, p => group.Similarities[p]),
+            Hashes = group.Hashes.Count > 0 ? remaining.ToDictionary(p => p, p => group.Hashes[p]) : group.Hashes,
+            Embeddings = group.Embeddings is { Count: > 0 } embs ? remaining.ToDictionary(p => p, p => embs[p]) : group.Embeddings,
+        };
+        _groups[groupIdx] = updated;
+        if (_groupFlows.TryGetValue(updated.Id, out var flow))
+            RebuildGroupFlow(flow, updated);
+        UpdateResultStatus();
     }
 
     // 比較画面の結果（基準変更・ファイル削除）を MainForm に反映する
@@ -1173,12 +1386,11 @@ public class MainForm : Form
         }
         else
         {
-            // 基準変更 or ファイル削除（グループ存続）→ RebuildGroupFlow で当該グループのみ差し替え
+            // 基準変更・ファイル削除（グループ存続）→ RebuildGroupFlow で当該グループのみ作り直す
             _groups[groupIdx] = updated;
             if (_groupFlows.TryGetValue(updated.Id, out var flow))
                 RebuildGroupFlow(flow, updated);
-            int dupes = _groups.Sum(g => g.Paths.Count);
-            _statusLabel.Text = $"{_groups.Count:N0} グループ / {dupes:N0} 枚";
+            UpdateResultStatus();
         }
     }
 
@@ -1228,16 +1440,18 @@ public class MainForm : Form
         _resultsPanel.ResumeLayout(true);
 
         UpdateVisibleGroups();
+        UpdateResultStatus();
+    }
 
-        if (_groups.Count > 0)
-        {
-            int dupes = _groups.Sum(g => g.Paths.Count);
-            _statusLabel.Text = $"{_groups.Count:N0} グループ / {dupes:N0} 枚";
-        }
-        else
-        {
-            _statusLabel.Text = "似た画像は見つかりませんでした";
-        }
+    /// <summary>
+    /// スキャン結果の件数をステータスバーに出す。比較画面での削除などでグループが変わったときも同じ形式で出し直す。
+    /// </summary>
+    private void UpdateResultStatus()
+    {
+        int dupes = _groups.Sum(g => g.Paths.Count);
+        _statusLabel.Text = _groups.Count == 0
+            ? $"似た画像は見つかりませんでした（{_scannedFileCount:N0} 件をスキャン）"
+            : $"{_groups.Count:N0} グループ / {dupes:N0} 枚（{_scannedFileCount:N0} 件をスキャン）";
     }
 
     private void RebuildGroupFlow(FlowLayoutPanel flow, ImageGroup group)
@@ -1249,14 +1463,18 @@ public class MainForm : Form
             if (c is Panel wrap)
                 foreach (Control inner in wrap.Controls)
                     if (inner is PictureBox pb && pb.Image is Bitmap bmp)
+                    {
                         _allocatedThumbnails.Remove(bmp);
+                        pb.Image = null;
+                        bmp.Dispose();
+                    }
             c.Dispose();
         }
         flow.Controls.Clear();
         int i = 0;
         foreach (var path in group.Paths)
         {
-            flow.Controls.Add(CreateThumbnail(path, group.Similarities[path], group.Id, i == 0));
+            flow.Controls.Add(CreateThumbnail(path, group.Similarities[path], group.Id, i == 0 ? null : group.Paths[0]));
             i++;
         }
         flow.ResumeLayout(true);
@@ -1311,8 +1529,9 @@ public class MainForm : Form
 
     private void UpdateClearCacheButton()
     {
+        // 場所の変更などのメニューはキャッシュが無くても使うため、ボタンは常に押せるようにする
         bool hasCache = CacheManager.HasCacheData();
-        _clearCacheButton.Enabled = hasCache;
+        _clearCacheButton.Enabled = true;
         if (hasCache)
         {
             long sizeBytes = CacheManager.GetCacheSize();
@@ -1332,30 +1551,83 @@ public class MainForm : Form
         _ => $"{bytes} B",
     };
 
-    private static (Bitmap? Bmp, Size OriginalSize) TryLoadThumbnail(string path)
+    private readonly record struct ImageHeader(Size Size, int Orientation, DateTime Date);
+
+    /// <summary>
+    /// 画像のヘッダーだけを読む（ピクセルは展開しない）。GDI+ が扱えない形式・読み取り失敗は null。
+    /// </summary>
+    private static ImageHeader? TryReadHeader(string path)
     {
         try
         {
-            using var src = Image.FromFile(path);
-
-            var originalSize = new Size(src.Width, src.Height);
-
-            int w = ThumbnailSize, h = ThumbnailSize;
-            double ratio = (double)src.Width / src.Height;
-            if (ratio > 1) h = (int)(ThumbnailSize / ratio);
-            else w = (int)(ThumbnailSize * ratio);
-            if (w < 1) w = 1;
-            if (h < 1) h = 1;
-
-            // GetThumbnailImage reads the embedded Exif thumbnail for JPEG (fast path);
-            // falls back to full-image resize for PNG/BMP/etc.
-            using var thumb = src.GetThumbnailImage(w, h, () => false, IntPtr.Zero);
-            return (new Bitmap(thumb), originalSize);
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var image = Image.FromStream(stream, useEmbeddedColorManagement: false, validateImageData: false);
+            return new ImageHeader(new Size(image.Width, image.Height), ImageOrientation.Read(image), ImageDate.Read(image, path));
         }
         catch
         {
-            return (null, Size.Empty);
+            return null;
         }
+    }
+
+    // サムネイル生成の同時実行数。GDI+ の展開は重く、全コアを使うとスクロール中の UI まで重くなるため半分に抑える
+    private static readonly SemaphoreSlim s_thumbnailGate = new(Math.Max(2, Environment.ProcessorCount / 2));
+
+    /// <summary>
+    /// サムネイル画像を裏で作り、できしだい <paramref name="pic"/> に差し込む。
+    /// 順番待ちの間にスクロールでカードが破棄された場合は作らずに飛ばす。
+    /// </summary>
+    private void LoadThumbnailInBackground(string path, PictureBox pic, int savedRot)
+    {
+        _ = Task.Run(async () =>
+        {
+            await s_thumbnailGate.WaitAsync();
+            Bitmap? bmp = null;
+            try
+            {
+                if (pic.IsDisposed) return;
+                using var src = Image.FromFile(path);
+                bmp = Thumbnail.Create(src, ThumbnailSize - ThumbnailBorder);
+                if (savedRot > 0)
+                {
+                    bmp.RotateFlip(savedRot switch
+                    {
+                        1 => RotateFlipType.Rotate90FlipNone,
+                        2 => RotateFlipType.Rotate180FlipNone,
+                        _ => RotateFlipType.Rotate270FlipNone,
+                    });
+                }
+            }
+            catch
+            {
+                bmp?.Dispose();
+                return;
+            }
+            finally
+            {
+                s_thumbnailGate.Release();
+            }
+
+            try
+            {
+                BeginInvoke(() =>
+                {
+                    // 待っている間にカードが破棄された・別の画像が入った（回転など）場合は捨てる
+                    if (pic.IsDisposed || pic.Image != null)
+                    {
+                        bmp.Dispose();
+                        return;
+                    }
+                    pic.Image = bmp;
+                    _allocatedThumbnails.Add(bmp);
+                });
+            }
+            catch
+            {
+                // フォームが閉じられた
+                bmp.Dispose();
+            }
+        });
     }
 
     private static void OpenExternal(string path)
@@ -1445,6 +1717,22 @@ public class MainForm : Form
             const int WM_KEYDOWN = 0x100;
             if (m.Msg == WM_VSCROLL || m.Msg == WM_MOUSEWHEEL || m.Msg == WM_KEYDOWN)
                 Scrolled?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    /// <summary>
+    /// フォーカスを受け取らないボタン。
+    ///
+    /// FlatStyle.Flat のボタンはフォーカスを受けると「既定のボタン」として濃い枠付きで描かれる。
+    /// スキャン中はツールバーのボタンが無効になるため、フォーカスが最初のグループの「比較」ボタンへ移り、
+    /// 一番上のボタンだけ見た目が変わってしまう。クリックでの動作はそのまま使える。
+    /// </summary>
+    private sealed class NonFocusableButton : Button
+    {
+        public NonFocusableButton()
+        {
+            SetStyle(ControlStyles.Selectable, false);
+            TabStop = false;
         }
     }
 }

@@ -7,6 +7,7 @@ internal sealed class CompareForm : Form
     private readonly ImageGroup _group;
     private readonly AppSettings _settings;
     private readonly Dictionary<string, string> _sizeCache = new();
+    private readonly Dictionary<string, string> _dateCache = new();
 
     private SplitContainer _mainSplitter = null!;
     private ZoomableImagePanel _leftView = null!;
@@ -21,15 +22,14 @@ internal sealed class CompareForm : Form
     private bool _suppressEvent;
     private bool _syncingView;
     private bool _loading = true;
-    private static bool s_skipDeleteConfirmation;
     private int _currentRightIndex;
+    // 比較画面だけの表示上の回転回数（1=90°, 2=180°, 3=270°）。設定には保存せず、画像を差し替えても同じ向きで表示する
+    private int _viewRotation;
+    // 基準の向きにそろえるための回転回数（右回り 90° 単位）。向きが違うだけの画像を、基準と同じ向きで表示する
+    private Dictionary<string, int> _alignRotations = new();
     private List<string> _paths = null!;
     private Dictionary<string, double> _similarities = null!;
     private readonly List<string> _deletedPaths = new();
-
-    // ゴミ箱アイコン（空／満杯）の再描画をシェルに要求する専用 API
-    [System.Runtime.InteropServices.DllImport("shell32.dll")]
-    private static extern int SHUpdateRecycleBinIcon();
 
     public IReadOnlyList<string> DeletedPaths => _deletedPaths;
 
@@ -58,6 +58,7 @@ internal sealed class CompareForm : Form
         _settings = settings;
         _paths = group.Paths.ToList();
         _similarities = group.Similarities.ToDictionary(kv => kv.Key, kv => kv.Value);
+        CompareWithReference();
         InitializeComponents();
         RebuildList();
         LoadLeft();
@@ -103,8 +104,8 @@ internal sealed class CompareForm : Form
         imageTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         imageTable.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        (_leftView, _leftInfo) = BuildSide(imageTable, 0, () => ExecuteDelete(true), () => RotateView(true));
-        (_rightView, _rightInfo) = BuildSide(imageTable, 1, () => ExecuteDelete(false), () => RotateView(false));
+        (_leftView, _leftInfo) = BuildSide(imageTable, 0, () => ExecuteDelete(true), () => RotateView());
+        (_rightView, _rightInfo) = BuildSide(imageTable, 1, () => ExecuteDelete(false), () => RotateView());
 
         // 左右の拡大・位置を同期
         _leftView.ViewChanged += (_, vs) =>
@@ -339,7 +340,7 @@ internal sealed class CompareForm : Form
                 item.SubItems.Add(fi.Extension.TrimStart('.').ToUpperInvariant());
                 item.SubItems.Add(FormatFileSize(fi.Length));
                 item.SubItems.Add(sizeText);
-                item.SubItems.Add(fi.LastWriteTime.ToString("yyyy/MM/dd"));
+                item.SubItems.Add(GetDateText(path));
                 item.SubItems.Add(Path.GetDirectoryName(path) ?? path);
                 _fileList.Items.Add(item);
             }
@@ -391,14 +392,14 @@ internal sealed class CompareForm : Form
         string ext = fi.Extension.TrimStart('.').ToUpperInvariant();
         string fileName = Path.GetFileName(path);
         string sizeText = FormatFileSize(fi.Length);
-        string dateText = fi.LastWriteTime.ToString("yyyy/MM/dd");
+        string dateText = GetDateText(path);
 
         FileInfo? otherFi = otherPath != null ? new FileInfo(otherPath) : null;
         string? otherExt = otherFi?.Extension.TrimStart('.').ToUpperInvariant();
         string? otherRes = otherPath != null
             ? (_sizeCache.TryGetValue(otherPath, out var or) ? or : ReadImageSizeText(otherPath))
             : null;
-        string? otherDate = otherFi?.LastWriteTime.ToString("yyyy/MM/dd");
+        string? otherDate = otherPath != null ? GetDateText(otherPath) : null;
         string? otherFileName = otherPath != null ? Path.GetFileName(otherPath) : null;
 
         // Line 1: ファイル名（文字単位diff）
@@ -411,12 +412,17 @@ internal sealed class CompareForm : Form
         }
         else
         {
-            AppendColored(rtb, $"類似度: {sim:P0}\n", sim < 0.9999);
+            AppendColored(rtb, $"類似度: {sim:P0}", sim < 0.9999);
+            // 自動で回したことが分かるようにする（ファイルは変えていない）
+            if (_alignRotations.TryGetValue(path, out int align) && align > 0)
+                AppendColored(rtb, $"（基準の向きにそろえて右に {align * 90}° 回して表示）", false);
+            AppendColored(rtb, "\n", false);
         }
         // Line 3: 形式 · サイズ  解像度  日付（フィールド単位diff）
         AppendColored(rtb, ext, otherExt != null && ext != otherExt);
         AppendColored(rtb, " · ", false);
-        AppendColored(rtb, sizeText, otherFi != null && fi.Length != otherFi.Length);
+        // バイト数ではなく表示文字列で比べる（見た目が同じ「3.9 MB」なのに赤字になるのを避ける）
+        AppendColored(rtb, sizeText, otherFi != null && sizeText != FormatFileSize(otherFi.Length));
         AppendColored(rtb, "  ", false);
         AppendColored(rtb, res, otherRes != null && res != otherRes);
         AppendColored(rtb, "  ", false);
@@ -427,74 +433,33 @@ internal sealed class CompareForm : Form
         AppendCharDiff(rtb, dirPath, otherDirPath);
     }
 
-    private void RotateView(bool isLeft)
+    /// <summary>
+    /// 左右の画像を両方とも 90° 右回転する。どちらの「回転」から呼ばれても、左右の向きをそろえたまま比べられるようにする。
+    /// 表示だけの回転で、設定（メイン画面のサムネイルの向き）には残さない。
+    /// </summary>
+    private void RotateView()
     {
-        ref Bitmap? bmpRef = ref isLeft ? ref _leftBitmap : ref _rightBitmap;
-        var view = isLeft ? _leftView : _rightView;
-        if (bmpRef == null || view.Tag is not string path) return;
+        _viewRotation = (_viewRotation + 1) % 4;
+        RotateSide(ref _leftBitmap, _leftView);
+        RotateSide(ref _rightBitmap, _rightView);
+    }
+
+    private static void RotateSide(ref Bitmap? bmpRef, ZoomableImagePanel view)
+    {
+        if (bmpRef == null) return;
 
         var rotated = (Bitmap)bmpRef.Clone();
         rotated.RotateFlip(RotateFlipType.Rotate90FlipNone);
         bmpRef.Dispose();
         bmpRef = rotated;
         view.Image = rotated;
-
-        _settings.ThumbnailRotations.TryGetValue(path, out int prevRot);
-        int newRot = (prevRot + 1) % 4;
-        if (newRot == 0)
-            _settings.ThumbnailRotations.Remove(path);
-        else
-            _settings.ThumbnailRotations[path] = newRot;
-        SettingsStorage.Save(_settings);
-
-        // 情報ラベルの diff も更新（回転でサイズ変化なしのため変更なし）
     }
 
     private void ExecuteDelete(bool isLeft)
     {
         string path = isLeft ? _paths[0] : _paths[_currentRightIndex];
 
-        if (!s_skipDeleteConfirmation)
-        {
-            var page = new TaskDialogPage()
-            {
-                Caption = "削除の確認",
-                Heading = "次のファイルをゴミ箱に移動しますか？",
-                Text = path,
-                Icon = TaskDialogIcon.Warning,
-                Buttons = { TaskDialogButton.Yes, TaskDialogButton.No },
-                DefaultButton = TaskDialogButton.No,
-                Verification = new TaskDialogVerificationCheckBox()
-                {
-                    Text = "次回以降確認しない"
-                }
-            };
-
-            var dlgResult = TaskDialog.ShowDialog(this, page);
-            if (dlgResult != TaskDialogButton.Yes) return;
-
-            if (page.Verification.Checked)
-            {
-                s_skipDeleteConfirmation = true;
-            }
-        }
-
-        try
-        {
-            Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile(
-                path,
-                Microsoft.VisualBasic.FileIO.UIOption.OnlyErrorDialogs,
-                Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
-
-            // ゴミ箱のアイコンを更新するようシェルに通知
-            SHUpdateRecycleBinIcon();
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"削除に失敗しました:\n{ex.Message}", "エラー",
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
-        }
+        if (!new FileDeleter(this, _settings).Delete(path)) return;
 
         _deletedPaths.Add(path);
         _paths.Remove(path);
@@ -519,19 +484,7 @@ internal sealed class CompareForm : Form
 
     private void RebuildAfterReferenceChange(string? preferredRightPath = null)
     {
-        var reference = _paths[0];
-        if (_group.Embeddings is { Count: > 0 } embs && embs.ContainsKey(reference))
-        {
-            var refEmb = embs[reference];
-            _similarities = _paths.ToDictionary(p => p,
-                p => (double)DINOv2Embedder.CosineSimilarity(refEmb, embs[p]));
-        }
-        else
-        {
-            ulong refHash = _group.Hashes[reference];
-            _similarities = _paths.ToDictionary(p => p,
-                p => ImageHasher.Similarity(refHash, _group.Hashes[p]));
-        }
+        CompareWithReference();
 
         var rest = _paths.Skip(1).OrderByDescending(p => _similarities[p]).ToList();
         _paths = new List<string> { _paths[0] };
@@ -546,6 +499,22 @@ internal sealed class CompareForm : Form
         SetRightIndex(rightIndex > 0 ? rightIndex : 1);
     }
 
+    /// <summary>
+    /// 今の基準（_paths[0]）と比べ直し、類似度と、基準の向きにそろえる回転を決める。
+    /// 比べられない場合（ハッシュも埋め込みも無い）は類似度をそのままにし、回さずに表示する。
+    /// </summary>
+    private void CompareWithReference()
+    {
+        var matches = ImageGrouper.MatchToReference(_paths[0], _paths, _group.Hashes, _group.Embeddings);
+        if (matches is null)
+        {
+            _alignRotations = new();
+            return;
+        }
+        _similarities = matches.ToDictionary(kv => kv.Key, kv => kv.Value.Similarity);
+        _alignRotations = matches.ToDictionary(kv => kv.Key, kv => kv.Value.Rotation);
+    }
+
     private void SwapReference(int clickedIdx)
     {
         string oldRef = _paths[0];
@@ -558,35 +527,8 @@ internal sealed class CompareForm : Form
     // 共通プレフィックス／サフィックスを通常色、中間の差分部分を赤で追記する
     private static void AppendCharDiff(RichTextBox rtb, string text, string? other)
     {
-        if (other == null || text == other)
-        {
-            AppendColored(rtb, text, false);
-            return;
-        }
-
-        // 共通プレフィックス長
-        int prefixLen = 0;
-        int maxPrefix = Math.Min(text.Length, other.Length);
-        while (prefixLen < maxPrefix && text[prefixLen] == other[prefixLen])
-            prefixLen++;
-
-        // 共通サフィックス長（プレフィックス除去後の残り部分で計算）
-        int suffixLen = 0;
-        int maxSuffix = Math.Min(text.Length - prefixLen, other.Length - prefixLen);
-        while (suffixLen < maxSuffix &&
-               text[text.Length - 1 - suffixLen] == other[other.Length - 1 - suffixLen])
-            suffixLen++;
-
-        // プレフィックス（通常色）
-        if (prefixLen > 0)
-            AppendColored(rtb, text[..prefixLen], false);
-        // 中間（差分 → 赤）
-        int middleEnd = text.Length - suffixLen;
-        if (middleEnd > prefixLen)
-            AppendColored(rtb, text[prefixLen..middleEnd], true);
-        // サフィックス（通常色）
-        if (suffixLen > 0)
-            AppendColored(rtb, text[^suffixLen..], false);
+        foreach (var run in DiffText.CharDiff(text, other))
+            AppendColored(rtb, run.Text, run.IsDiff);
     }
 
     private static void AppendColored(RichTextBox rtb, string text, bool isRed)
@@ -600,9 +542,11 @@ internal sealed class CompareForm : Form
     private Bitmap? LoadAndRotate(string path)
     {
         var bmp = LoadBitmap(path);
-        if (bmp != null && _settings.ThumbnailRotations.TryGetValue(path, out int rot) && rot > 0)
+        // 基準の向きにそろえる回転に、比較画面での回転を重ねる
+        int rotation = (_viewRotation + (_alignRotations.TryGetValue(path, out int align) ? align : 0)) % 4;
+        if (bmp != null && rotation > 0)
         {
-            var rotType = rot switch
+            var rotType = rotation switch
             {
                 1 => RotateFlipType.Rotate90FlipNone,
                 2 => RotateFlipType.Rotate180FlipNone,
@@ -619,17 +563,34 @@ internal sealed class CompareForm : Form
         {
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
             using var src = Image.FromStream(fs, false, false);
+            Bitmap bmp;
             if (src.Width <= maxDim && src.Height <= maxDim)
-                return new Bitmap(src);
-            double r = Math.Min((double)maxDim / src.Width, (double)maxDim / src.Height);
-            int w = (int)(src.Width * r), h = (int)(src.Height * r);
-            var bmp = new Bitmap(w, h);
-            using var g = Graphics.FromImage(bmp);
-            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-            g.DrawImage(src, 0, 0, w, h);
+            {
+                bmp = new Bitmap(src);
+            }
+            else
+            {
+                double r = Math.Min((double)maxDim / src.Width, (double)maxDim / src.Height);
+                int w = (int)(src.Width * r), h = (int)(src.Height * r);
+                bmp = new Bitmap(w, h);
+                using var g = Graphics.FromImage(bmp);
+                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                g.DrawImage(src, 0, 0, w, h);
+            }
+
+            // メイン画面のサムネイルと同じく EXIF の向きに合わせて回す（基準にそろえる回転と比較画面での回転は LoadAndRotate でこのあとに重ねる）
+            ImageOrientation.Apply(bmp, ImageOrientation.Read(src));
             return bmp;
         }
         catch { return null; }
+    }
+
+    /// <summary>表示用の日付（EXIF の日時、なければ更新日時）。開き直さないようパスごとに覚えておく。</summary>
+    private string GetDateText(string path)
+    {
+        if (!_dateCache.TryGetValue(path, out var text))
+            _dateCache[path] = text = ImageDate.Read(path).ToString("yyyy/MM/dd");
+        return text;
     }
 
     private static string ReadImageSizeText(string path)

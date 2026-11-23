@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.Numerics;
 using System.Runtime.InteropServices;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
@@ -12,6 +13,12 @@ internal sealed class DINOv2Embedder : IDisposable
     private static readonly float[] Mean = [0.485f, 0.456f, 0.406f];
     private static readonly float[] Std  = [0.229f, 0.224f, 0.225f];
     private const int InputSize = 224;
+
+    /// <summary>
+    /// 1 枚あたりの向きの数。埋め込みは 0°, 90°, 180°, 270°（右回り）に回した画像のベクトルをこの順に連結して持つ。
+    /// 向きが違うだけの画像を同じとみなして比べるため（<see cref="BestMatch"/>）。
+    /// </summary>
+    public const int Rotations = 4;
 
     private readonly InferenceSession _session;
     private readonly string _inputName;
@@ -104,11 +111,19 @@ internal sealed class DINOv2Embedder : IDisposable
     /// <summary>
     /// 画像のロード・リサイズ・正規化テンソル変換を実施する。スレッド安全。
     /// GPU 利用時は本メソッドを並列実行して CPU 前処理を稼ぎ、Run() のみ <see cref="Infer"/> でロック直列化する。
+    /// 戻り値は 0°, 90°, 180°, 270°（右回り）に回した <see cref="Rotations"/> 個のテンソル。
+    /// 正方形に縮めてから回しても、回してから縮めたのと同じになるため、読み込みは 1 回で済む。
     /// </summary>
-    public DenseTensor<float> Preprocess(string imagePath)
+    public DenseTensor<float>[] Preprocess(string imagePath)
     {
         using var bmp = LoadResized(imagePath, InputSize);
-        return BitmapToTensor(bmp);
+        var tensors = new DenseTensor<float>[Rotations];
+        for (int r = 0; r < Rotations; r++)
+        {
+            if (r > 0) bmp.RotateFlip(RotateFlipType.Rotate90FlipNone);
+            tensors[r] = BitmapToTensor(bmp);
+        }
+        return tensors;
     }
 
     /// <summary>
@@ -142,7 +157,17 @@ internal sealed class DINOv2Embedder : IDisposable
         return L2Normalize(embedding);
     }
 
-    public float[] Embed(string imagePath) => Infer(Preprocess(imagePath));
+    public float[] Embed(string imagePath) => Concat(InferBatch(Preprocess(imagePath)), 0);
+
+    /// <summary><paramref name="start"/> から <see cref="Rotations"/> 個の向きのベクトルを、1 つの埋め込みに連結する。</summary>
+    public static float[] Concat(IReadOnlyList<float[]> embeddings, int start)
+    {
+        int dim = embeddings[start].Length;
+        var result = new float[dim * Rotations];
+        for (int r = 0; r < Rotations; r++)
+            embeddings[start + r].CopyTo(result, r * dim);
+        return result;
+    }
 
     /// <summary>
     /// 複数枚を 1 回の <c>Run()</c> で推論する（バッチ推論）。
@@ -195,13 +220,49 @@ internal sealed class DINOv2Embedder : IDisposable
         return output;
     }
 
-    public static float CosineSimilarity(float[] a, float[] b)
+    /// <summary>
+    /// 向きが違うだけの画像を同じとみなして比べる。<paramref name="a"/> の 0° と <paramref name="b"/> の 4 つの向きのコサイン類似度のうち、いちばん高いものを返す。
+    /// Rotation は <paramref name="b"/> の画像を右に何回 90° 回すと <paramref name="a"/> の向きにそろうか（同じ値なら少ない回数）。
+    /// </summary>
+    public static (float Similarity, int Rotation) BestMatch(float[] a, float[] b)
     {
-        // 両ベクトルは L2 正規化済みなのでドット積 = コサイン類似度
-        float dot = 0f;
-        for (int i = 0; i < a.Length; i++)
+        int dim = a.Length / Rotations;
+        if (dim == 0 || a.Length != b.Length) return (0f, 0);
+
+        var a0 = a.AsSpan(0, dim);
+        float best = float.MinValue;
+        int bestRotation = 0;
+        for (int r = 0; r < Rotations; r++)
+        {
+            float dot = Dot(a0, b.AsSpan(r * dim, dim));
+            if (dot > best) (best, bestRotation) = (dot, r);
+        }
+        return (Math.Clamp(best, 0f, 1f), bestRotation);
+    }
+
+    /// <summary>どれかの向きでしきい値以上になるか。グルーピング用に、見つかった時点で打ち切る。</summary>
+    public static bool IsSimilar(float[] a, float[] b, float threshold)
+    {
+        int dim = a.Length / Rotations;
+        if (dim == 0 || a.Length != b.Length) return false;
+
+        var a0 = a.AsSpan(0, dim);
+        for (int r = 0; r < Rotations; r++)
+            if (Dot(a0, b.AsSpan(r * dim, dim)) >= threshold) return true;
+        return false;
+    }
+
+    // 両ベクトルは L2 正規化済みなのでドット積 = コサイン類似度。比較の回数が 4 倍になるため SIMD で計算する
+    private static float Dot(ReadOnlySpan<float> a, ReadOnlySpan<float> b)
+    {
+        var sum = Vector<float>.Zero;
+        int i = 0;
+        for (; i <= a.Length - Vector<float>.Count; i += Vector<float>.Count)
+            sum += new Vector<float>(a.Slice(i)) * new Vector<float>(b.Slice(i));
+        float dot = Vector.Sum(sum);
+        for (; i < a.Length; i++)
             dot += a[i] * b[i];
-        return Math.Clamp(dot, 0f, 1f);
+        return dot;
     }
 
     public void Dispose() => _session.Dispose();
@@ -259,14 +320,19 @@ internal sealed class DINOv2Embedder : IDisposable
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         using var src = Image.FromStream(fs, useEmbeddedColorManagement: false, validateImageData: false);
         var dst = new Bitmap(size, size, PixelFormat.Format24bppRgb);
-        using var g = Graphics.FromImage(dst);
-        // DINOv2 のような大規模ニューラルネットは補間品質に頑健なため Bilinear で十分。
-        // HighQualityBicubic は 3〜5× 遅く、品質差はモデル精度にほぼ影響しない。
-        g.InterpolationMode  = InterpolationMode.Bilinear;
-        g.CompositingQuality = CompositingQuality.HighSpeed;
-        g.SmoothingMode      = SmoothingMode.HighSpeed;
-        g.PixelOffsetMode    = PixelOffsetMode.HighSpeed;
-        g.DrawImage(src, 0, 0, size, size);
+        // 回す前に Graphics を手放す
+        using (var g = Graphics.FromImage(dst))
+        {
+            // DINOv2 のような大規模ニューラルネットは補間品質に頑健なため Bilinear で十分。
+            // HighQualityBicubic は 3〜5× 遅く、品質差はモデル精度にほぼ影響しない。
+            g.InterpolationMode  = InterpolationMode.Bilinear;
+            g.CompositingQuality = CompositingQuality.HighSpeed;
+            g.SmoothingMode      = SmoothingMode.HighSpeed;
+            g.PixelOffsetMode    = PixelOffsetMode.HighSpeed;
+            g.DrawImage(src, 0, 0, size, size);
+        }
+        // 表示と同じく EXIF の向きに合わせて回す（正方形なので縮めてから回してよい）
+        ImageOrientation.Apply(dst, ImageOrientation.Read(src));
         return dst;
     }
 
