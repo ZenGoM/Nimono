@@ -74,6 +74,37 @@ internal static class CacheManager
         DbFolder = newFolder;
     }
 
+    // ── キャッシュを使えなかったときの記録 ──────────────────────────────
+    // 失敗してもスキャンは続ける（計算し直すだけ）が、理由は scan.log に残し、画面にも出せるようにする。
+
+    private static readonly ConcurrentQueue<string> s_problems = new();
+
+    /// <summary>スキャンの始めに呼ぶ。前回のスキャンで記録した問題を消す。</summary>
+    public static void ResetProblems() => s_problems.Clear();
+
+    /// <summary>今回のスキャンでキャッシュを使えなかった理由（画面表示用。重複なし）。</summary>
+    public static IReadOnlyList<string> Problems => s_problems.ToArray();
+
+    private static void ReportProblem(string message, Exception? ex = null)
+    {
+        ScanLogger.Log(ex is null
+            ? $"キャッシュ: {message} ({DbPath})"
+            : $"キャッシュ: {message}: {ex.GetType().Name}: {ex.Message} ({DbPath})");
+        var shown = ex is null ? message : $"{message}（{ex.Message}）";
+        if (!s_problems.Contains(shown)) s_problems.Enqueue(shown);
+    }
+
+    /// <summary>
+    /// キャッシュの場所のドライブがあるか。外付けドライブが外れているときなどは false を返し、問題として記録する。
+    /// </summary>
+    private static bool IsFolderAvailable()
+    {
+        var root = Path.GetPathRoot(DbFolder);
+        if (string.IsNullOrEmpty(root) || Directory.Exists(root)) return true;
+        ReportProblem($"キャッシュの場所（{DbFolder}）のドライブが見つかりません");
+        return false;
+    }
+
     // インメモリキャッシュ（スキャン中に使用）
     public static ConcurrentDictionary<string, CacheEntry> MemoryCache { get; } = new(StringComparer.OrdinalIgnoreCase);
 
@@ -158,8 +189,9 @@ internal static class CacheManager
             var count = (long)(command.ExecuteScalar() ?? 0L);
             return count > 0;
         }
-        catch
+        catch (Exception ex)
         {
+            ScanLogger.Log($"キャッシュ: 件数の取得に失敗: {ex.GetType().Name}: {ex.Message} ({DbPath})");
             return false;
         }
     }
@@ -171,18 +203,20 @@ internal static class CacheManager
             if (!File.Exists(DbPath)) return 0;
             return new FileInfo(DbPath).Length;
         }
-        catch
+        catch (Exception ex)
         {
+            ScanLogger.Log($"キャッシュ: 容量の取得に失敗: {ex.GetType().Name}: {ex.Message} ({DbPath})");
             return 0;
         }
     }
 
+    /// <summary>キャッシュを消す。失敗したら例外を投げる（呼び出し側で利用者に知らせる）。</summary>
     public static void ClearCache()
     {
         MemoryCache.Clear();
+        if (!File.Exists(DbPath)) return;
         try
         {
-            if (!File.Exists(DbPath)) return;
             using var connection = new SqliteConnection(ConnectionString);
             connection.Open();
             using var command = connection.CreateCommand();
@@ -197,16 +231,17 @@ internal static class CacheManager
             command.CommandText = "VACUUM";
             command.ExecuteNonQuery();
         }
-        catch
+        catch (Exception ex)
         {
-            // Ignore errors
+            ScanLogger.Log($"キャッシュ: クリアに失敗: {ex.GetType().Name}: {ex.Message} ({DbPath})");
+            throw;
         }
     }
 
     public static async Task LoadCacheAsync(IReadOnlyList<string> filePaths)
     {
         MemoryCache.Clear();
-        if (!File.Exists(DbPath) || filePaths.Count == 0) return;
+        if (!IsFolderAvailable() || !File.Exists(DbPath) || filePaths.Count == 0) return;
 
         await Task.Run(() =>
         {
@@ -253,16 +288,17 @@ internal static class CacheManager
                     }
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                // Ignore load errors, we just recompute
+                // 読めなかった分は計算し直す
+                ReportProblem("読み込みに失敗しました", ex);
             }
         });
     }
 
     public static async Task SaveCacheAsync(IReadOnlyList<string> updatedPaths)
     {
-        if (updatedPaths.Count == 0) return;
+        if (updatedPaths.Count == 0 || !IsFolderAvailable()) return;
 
         await Task.Run(() =>
         {
@@ -315,9 +351,9 @@ internal static class CacheManager
 
                 transaction.Commit();
             }
-            catch
+            catch (Exception ex)
             {
-                // Ignore save errors
+                ReportProblem("保存に失敗しました", ex);
             }
         });
     }
@@ -327,7 +363,7 @@ internal static class CacheManager
     /// </summary>
     public static async Task<GroupCacheSnapshot?> LoadGroupCacheAsync(string mode)
     {
-        if (!File.Exists(DbPath)) return null;
+        if (!IsFolderAvailable() || !File.Exists(DbPath)) return null;
 
         return await Task.Run(() =>
         {
@@ -351,9 +387,10 @@ internal static class CacheManager
                 }
                 return new GroupCacheSnapshot(threshold, files);
             }
-            catch
+            catch (Exception ex)
             {
-                // 古い DB（表が無い）・読み取り失敗はキャッシュ無しとして全件を計算し直す
+                // 読み取りに失敗したらキャッシュ無しとして全件を比較し直す
+                ReportProblem("グループキャッシュの読み込みに失敗しました", ex);
                 return (GroupCacheSnapshot?)null;
             }
         });
@@ -366,6 +403,8 @@ internal static class CacheManager
     public static async Task SaveGroupCacheAsync(
         string mode, double threshold, IReadOnlyList<string> paths, IReadOnlyList<ImageGroup> groups)
     {
+        if (!IsFolderAvailable()) return;
+
         await Task.Run(() =>
         {
             try
@@ -416,9 +455,88 @@ internal static class CacheManager
 
                 transaction.Commit();
             }
-            catch
+            catch (Exception ex)
             {
-                // Ignore save errors
+                ReportProblem("保存に失敗しました", ex);
+            }
+        });
+    }
+
+    /// <summary>
+    /// スキャンしたフォルダーの中にあるのに、今回見つからなかったファイル（削除・移動・名前変更したもの）の行を消す。
+    /// キャッシュはフォルダーをまたいで共有しているため、今回スキャンしなかったフォルダーの行は残す。
+    /// フォルダー自体が見つからない場合（外付けドライブが外れているなど）も、その中の行は残す。
+    /// 消した行が全体の 4 分の 1 以上なら VACUUM してファイルを縮める。
+    /// </summary>
+    /// <returns>消した行数。</returns>
+    public static async Task<int> PruneMissingAsync(IEnumerable<string> scannedFolders, IReadOnlyList<string> foundFiles)
+    {
+        if (!IsFolderAvailable() || !File.Exists(DbPath)) return 0;
+
+        var prefixes = scannedFolders
+            .Where(Directory.Exists)
+            .Select(f =>
+            {
+                var full = Path.GetFullPath(f);
+                return full.EndsWith('\\') ? full : full + '\\';
+            })
+            .ToList();
+        if (prefixes.Count == 0) return 0;
+
+        return await Task.Run(() =>
+        {
+            try
+            {
+                var found = new HashSet<string>(foundFiles, StringComparer.OrdinalIgnoreCase);
+                using var connection = new SqliteConnection(ConnectionString);
+                connection.Open();
+                ApplyPragmas(connection);
+
+                var stale = new List<string>();
+                long total = 0;
+                using (var select = connection.CreateCommand())
+                {
+                    select.CommandText = "SELECT FilePath FROM ImageCache";
+                    using var reader = select.ExecuteReader();
+                    while (reader.Read())
+                    {
+                        total++;
+                        var path = reader.GetString(0);
+                        if (!found.Contains(path) &&
+                            prefixes.Any(p => path.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
+                            stale.Add(path);
+                    }
+                }
+                if (stale.Count == 0) return 0;
+
+                using (var transaction = connection.BeginTransaction())
+                {
+                    using var delete = connection.CreateCommand();
+                    delete.Transaction = transaction;
+                    delete.CommandText = "DELETE FROM ImageCache WHERE FilePath = @FilePath";
+                    var pathParam = delete.Parameters.Add("@FilePath", SqliteType.Text);
+                    foreach (var path in stale)
+                    {
+                        pathParam.Value = path;
+                        delete.ExecuteNonQuery();
+                    }
+                    transaction.Commit();
+                }
+
+                if (stale.Count * 4L >= total)
+                {
+                    using var vacuum = connection.CreateCommand();
+                    vacuum.CommandText = "VACUUM";
+                    vacuum.ExecuteNonQuery();
+                }
+
+                ScanLogger.Log($"キャッシュ: 見つからなかったファイルの行を削除: {stale.Count}件 / {total}件");
+                return stale.Count;
+            }
+            catch (Exception ex)
+            {
+                ReportProblem("不要な行の削除に失敗しました", ex);
+                return 0;
             }
         });
     }

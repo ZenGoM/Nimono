@@ -17,6 +17,8 @@ public class MainForm : Form
     private const int MaxThumbnailsPerGroup = 50;
 
     private readonly List<string> _folders = new();
+    // 直近のスキャンでキャッシュを使えなかった理由（なければ null）。結果の件数と一緒にステータスバーに出す
+    private string? _cacheProblem;
     private readonly List<Bitmap> _allocatedThumbnails = new();
 
     // 画像ヘッダー（縦横・EXIF の向き・日付）の先読み結果。null は GDI+ で読めなかったファイル
@@ -236,7 +238,15 @@ public class MainForm : Form
                 "確認", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
             if (dr == DialogResult.Yes)
             {
-                CacheManager.ClearCache();
+                try
+                {
+                    CacheManager.ClearCache();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, $"キャッシュをクリアできませんでした:\n{ex.Message}", "エラー",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
                 UpdateClearCacheButton();
             }
         });
@@ -535,6 +545,8 @@ public class MainForm : Form
         {
             // 1) ファイル列挙
             ScanLogger.Reset($"スキャン開始 mode={(isDINOv2 ? (useGpu ? "DINOv2_DML" : "DINOv2") : "pHash")}");
+            CacheManager.ResetProblems();
+            _cacheProblem = null;
             _statusLabel.Text = "ファイルを列挙中...";
             _progressBar.Style = ProgressBarStyle.Marquee;
             var files = await Task.Run(
@@ -604,7 +616,13 @@ public class MainForm : Form
             _statusLabel.Text = "キャッシュを保存中...";
             await CacheManager.SaveCacheAsync(newPaths);
             await CacheManager.SaveGroupCacheAsync(groupCacheMode, threshold, groupedPaths, groups);
+            // 列挙を最後まで終えたときだけ呼ぶ（途中で止めた列挙では、見つからなかった = 消えた、とは言えない）
+            await CacheManager.PruneMissingAsync(folders, files);
             Log("キャッシュ保存完了");
+
+            var problems = CacheManager.Problems;
+            if (problems.Count > 0)
+                _cacheProblem = $"キャッシュを使えませんでした: {string.Join(" / ", problems)}。詳しくは scan.log";
 
             // 4) 表示
             Log("結果表示開始");
@@ -1449,9 +1467,10 @@ public class MainForm : Form
     private void UpdateResultStatus()
     {
         int dupes = _groups.Sum(g => g.Paths.Count);
-        _statusLabel.Text = _groups.Count == 0
+        var result = _groups.Count == 0
             ? $"似た画像は見つかりませんでした（{_scannedFileCount:N0} 件をスキャン）"
             : $"{_groups.Count:N0} グループ / {dupes:N0} 枚（{_scannedFileCount:N0} 件をスキャン）";
+        _statusLabel.Text = _cacheProblem is null ? result : $"{result} — {_cacheProblem}";
     }
 
     private void RebuildGroupFlow(FlowLayoutPanel flow, ImageGroup group)
