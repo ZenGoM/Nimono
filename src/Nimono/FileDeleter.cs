@@ -294,7 +294,7 @@ internal sealed class FileDeleter
 
     private sealed class WaitCursor : IDisposable
     {
-        private readonly Cursor _previous = Cursor.Current;
+        private readonly Cursor? _previous = Cursor.Current;
         public WaitCursor() => Cursor.Current = Cursors.WaitCursor;
         public void Dispose() => Cursor.Current = _previous;
     }
