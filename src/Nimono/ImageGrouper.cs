@@ -418,6 +418,28 @@ internal static class ImageGrouper
         return null;
     }
 
+    /// <summary>
+    /// <paramref name="reference"/> を基準にしたグループを返す。基準を先頭に置き、ほかは新しい基準との類似度が高い順に並べる。
+    /// 類似度が同じ画像は <paramref name="tieOrder"/> の小さい順（指定がなければ今の並び順）にする。
+    /// 類似度を計算できない（特徴量が無い）場合はグループをそのまま返す。
+    /// </summary>
+    public static ImageGroup WithReference(ImageGroup group, string reference, Func<string, int>? tieOrder = null)
+    {
+        var matches = MatchToReference(reference, group.Paths, group.Hashes, group.Embeddings);
+        if (matches is null) return group;
+        var similarities = matches.ToDictionary(kv => kv.Key, kv => kv.Value.Similarity);
+
+        var currentOrder = group.Paths.Select((p, i) => (p, i)).ToDictionary(x => x.p, x => x.i);
+        tieOrder ??= p => currentOrder[p];
+        var paths = group.Paths
+            .Where(p => p != reference)
+            .OrderByDescending(p => similarities[p])
+            .ThenBy(tieOrder)
+            .Prepend(reference)
+            .ToList();
+        return group with { Paths = paths, Similarities = similarities };
+    }
+
     private interface ISimilarity
     {
         bool IsSimilar(int i, int j);

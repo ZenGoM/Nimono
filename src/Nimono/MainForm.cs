@@ -19,6 +19,11 @@ public class MainForm : Form
     private readonly List<string> _folders = new();
     // 直近のスキャンでキャッシュを使えなかった理由（なければ null）。結果の件数と一緒にステータスバーに出す
     private string? _cacheProblem;
+    // 基準画像の優先順位と、それに使う直近のスキャンの情報（選んでいたフォルダーの並び・ファイルが見つかった順番）
+    private List<ReferencePriorityRule> _referenceRules = ReferencePriority.DefaultRules();
+    private IReadOnlyList<string> _scanFolders = [];
+    private Dictionary<string, int> _foundOrder = new(StringComparer.OrdinalIgnoreCase);
+    private Button _priorityButton = null!;
     private readonly List<Bitmap> _allocatedThumbnails = new();
 
     // 画像ヘッダー（縦横・EXIF の向き・日付）の先読み結果。null は GDI+ で読めなかったファイル
@@ -67,6 +72,7 @@ public class MainForm : Form
             WindowState = FormWindowState.Maximized;
 
         _folders.AddRange(_settings.SearchFolders.Where(Directory.Exists));
+        _referenceRules = ReferencePriority.Normalize(_settings.ReferencePriorities);
         _thresholdInput.Value = Math.Clamp(_settings.SimilarityThreshold, 50, 100);
         _thresholdInput.ValueChanged += (_, _) => SaveSettings();
         // 実行ファイルと同じフォルダーの model.onnx を自動検出
@@ -224,6 +230,14 @@ public class MainForm : Form
             TextAlign = ContentAlignment.MiddleLeft,
         };
 
+        _priorityButton = new Button
+        {
+            Text = "基準の優先順位...",
+            Top = 4,
+            Height = 28,
+        };
+        _priorityButton.Click += ReferencePriority_Click;
+
         _clearCacheButton = new Button
         {
             Text = "キャッシュ",
@@ -293,6 +307,8 @@ public class MainForm : Form
         // フォーム自身の Font (Segoe UI 9.5pt) で計測する必要がある。
         int x = LeftMargin;
         _selectFoldersButton.Left = x; x = _selectFoldersButton.Right + ControlGap;
+        _priorityButton.Width     = TextRenderer.MeasureText(_priorityButton.Text, this.Font).Width + 24;
+        _priorityButton.Left      = x; x = _priorityButton.Right + ControlGap;
         _scanButton.Left          = x; x = _scanButton.Right + GroupGap;
         methodLabel.Left          = x; x += TextRenderer.MeasureText(methodLabel.Text, this.Font).Width + ControlGap;
         _methodCombo.Left         = x; x = _methodCombo.Right + GroupGap;
@@ -305,6 +321,7 @@ public class MainForm : Form
         _cancelButton.Left        = x;
 
         toolPanel.Controls.Add(_selectFoldersButton);
+        toolPanel.Controls.Add(_priorityButton);
         toolPanel.Controls.Add(_scanButton);
         toolPanel.Controls.Add(methodLabel);
         toolPanel.Controls.Add(_methodCombo);
@@ -624,6 +641,17 @@ public class MainForm : Form
             if (problems.Count > 0)
                 _cacheProblem = $"キャッシュを使えませんでした: {string.Join(" / ", problems)}。詳しくは scan.log";
 
+            // 3) 優先順位で各グループの基準画像を選ぶ
+            _scanFolders = folders;
+            _foundOrder = files.Select((path, i) => (path, i))
+                .ToDictionary(x => x.path, x => x.i, StringComparer.OrdinalIgnoreCase);
+            _statusLabel.Text = "基準画像を選んでいます...";
+            _progressBar.Style = ProgressBarStyle.Marquee;
+            var rules = _referenceRules.Select(r => r.Clone()).ToList();
+            var scannedGroups = groups;
+            groups = await Task.Run(() => ApplyReferencePriority(scannedGroups, rules, token), token);
+            Log("基準画像の選択完了");
+
             // 4) 表示
             Log("結果表示開始");
             RenderGroups(groups);
@@ -668,6 +696,7 @@ public class MainForm : Form
         _scanButton.Enabled = !scanning && _folders.Count > 0;
         _thresholdInput.Enabled = !scanning;
         _methodCombo.Enabled = !scanning;
+        _priorityButton.Enabled = !scanning;
         _cancelButton.Enabled = scanning;
         if (scanning)
         {
@@ -745,11 +774,12 @@ public class MainForm : Form
         }
     }
 
-    private void ClearResults()
+    /// <param name="keepHeaderCache">読み込み済みの画像ヘッダーを残す（同じ画像を表示し直す場合）。</param>
+    private void ClearResults(bool keepHeaderCache = false)
     {
         _headerPrefetchCts?.Cancel();
         _headerPrefetchCts = null;
-        _headerCache.Clear();
+        if (!keepHeaderCache) _headerCache.Clear();
         _resultsPanel.SuspendLayout();
         _resultsPanel.Controls.Clear();
         foreach (var p in _groupPanels.Values)
@@ -1334,22 +1364,108 @@ public class MainForm : Form
             RebuildGroupFlow(flow, newGroup);
     }
 
-    private static ImageGroup RecalculateGroup(ImageGroup group, string referencePath)
+    /// <summary>
+    /// 基準画像の優先順位を変える。結果を表示中なら、全グループの基準を選び直す（スキャンし直さない）。
+    /// 比較画面などで手で変えた基準も、新しい優先順位で選び直す。
+    /// </summary>
+    private async void ReferencePriority_Click(object? sender, EventArgs e)
     {
-        // 向きが違うだけの画像は基準の向きにそろえて比べる（グルーピング・比較画面と同じ計算）
-        var matches = ImageGrouper.MatchToReference(referencePath, group.Paths, group.Hashes, group.Embeddings);
-        if (matches is null) return group;
-        var newSimilarities = matches.ToDictionary(kv => kv.Key, kv => kv.Value.Similarity);
+        using var dlg = new ReferencePriorityDialog(_referenceRules);
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
 
-        // referencePath を必ず先頭に置く（同一スコアの画像との不安定ソートを防ぐ）
-        var newPaths = newSimilarities
-            .Where(kv => kv.Key != referencePath)
-            .OrderByDescending(kv => kv.Value)
-            .Select(kv => kv.Key)
-            .Prepend(referencePath)
-            .ToList();
-        return group with { Paths = newPaths, Similarities = newSimilarities };
+        _referenceRules = dlg.Rules.Select(r => r.Clone()).ToList();
+        _settings.ReferencePriorities = _referenceRules.Select(r => r.Clone()).ToList();
+        SaveSettings();
+        if (_groups.Count == 0) return;
+
+        _cts?.Cancel();
+        _cts = new CancellationTokenSource();
+        var token = _cts.Token;
+        SetScanningState(true);
+        _statusLabel.Text = "基準画像を選び直しています...";
+        _progressBar.Style = ProgressBarStyle.Marquee;
+        try
+        {
+            var current = _groups.ToList();
+            var rules = _referenceRules.Select(r => r.Clone()).ToList();
+            var regrouped = await Task.Run(() => ApplyReferencePriority(current, rules, token), token);
+            ClearResults(keepHeaderCache: true);
+            RenderGroups(regrouped);
+            UpdateResultStatus();
+        }
+        catch (OperationCanceledException)
+        {
+            // 選び直しをやめた場合は、今の表示をそのまま残す
+            UpdateResultStatus();
+        }
+        catch (Exception ex)
+        {
+            _statusLabel.Text = $"エラー: {ex.Message}";
+            Log($"基準の選び直しで例外: {ex}");
+        }
+        finally
+        {
+            SetScanningState(false);
+        }
     }
+
+    /// <summary>優先順位で各グループの基準画像を選ぶ。UI スレッド以外から呼ぶ。</summary>
+    private List<ImageGroup> ApplyReferencePriority(
+        IReadOnlyList<ImageGroup> groups, IReadOnlyList<ReferencePriorityRule> rules, CancellationToken token)
+    {
+        bool needsHeader = ReferencePriority.NeedsImageHeader(rules);
+        var result = new ImageGroup[groups.Count];
+        Parallel.For(0, groups.Count,
+            new ParallelOptions
+            {
+                CancellationToken = token,
+                // 解像度・日付を読むためにファイルを開くので、サムネイル生成と同じく半分のコアに抑える
+                MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount / 2),
+            },
+            i => result[i] = ReferencePriority.Apply(groups[i], rules, p => FactsOf(p, needsHeader)));
+        return result.ToList();
+    }
+
+    /// <summary>基準画像を選ぶために比べる値を集める。<paramref name="needsHeader"/> が false ならファイルを開かない。</summary>
+    private ImageFacts FactsOf(string path, bool needsHeader)
+    {
+        long? size = null;
+        DateTime? modified = null;
+        try
+        {
+            var fi = new FileInfo(path);
+            if (fi.Exists)
+            {
+                size = fi.Length;
+                modified = fi.LastWriteTime;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"基準の選択: ファイル情報を読めない: {ex.GetType().Name}: {ex.Message} ({path})");
+        }
+
+        // 読んだヘッダーはサムネイルの表示でもそのまま使う
+        var header = needsHeader ? _headerCache.GetOrAdd(path, TryReadHeader) : null;
+        long? pixels = header is { } h ? (long)h.Size.Width * h.Size.Height : null;
+        return new ImageFacts(
+            FoundIndexOf(path),
+            ReferencePriority.FolderIndexOf(path, _scanFolders),
+            pixels,
+            header?.Date,
+            modified,
+            size,
+            Path.GetFileName(path));
+    }
+
+    // スキャンで見つかった順番。直近のスキャンに無いファイルは最後
+    private int FoundIndexOf(string path) =>
+        _foundOrder.TryGetValue(path, out int i) ? i : int.MaxValue;
+
+    // 向きが違うだけの画像は基準の向きにそろえて比べる（グルーピング・比較画面と同じ計算）。
+    // 類似度が同じ画像は見つかった順に並べる
+    private ImageGroup RecalculateGroup(ImageGroup group, string referencePath) =>
+        ImageGrouper.WithReference(group, referencePath, FoundIndexOf);
 
     /// <summary>
     /// グループの基準画像だけを残し、ほかの画像をまとめて削除する（表示しきれていない画像も含む）。

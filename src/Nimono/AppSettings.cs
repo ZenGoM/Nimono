@@ -23,6 +23,8 @@ internal sealed class AppSettings
     // ゴミ箱への移動を拒否するクラウド同期プロバイダー名。削除時に最初から完全削除の確認を出す。
     // 移動が 0x17B で失敗したプロバイダーはここに追加される
     public List<string> NoRecycleProviders { get; set; } = new() { "iCloudPhotos" };
+    // 基準画像の優先順位（上から順に比べる）。どれも無効なら見つかった順
+    public List<ReferencePriorityRule> ReferencePriorities { get; set; } = ReferencePriority.DefaultRules();
 }
 
 internal static class SettingsStorage
