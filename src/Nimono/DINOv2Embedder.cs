@@ -240,6 +240,13 @@ internal sealed class DINOv2Embedder : IDisposable
         return (Math.Clamp(best, 0f, 1f), bestRotation);
     }
 
+    /// <summary>
+    /// しきい値と比べるときの許容幅。float の内積は丸め誤差で、同じベクトル同士でも 1.0 にならず
+    /// 0.9999996 などになるため、しきい値 100% で完全に同じ画像を見逃していた（実データで約 44%）。
+    /// 実測の誤差（最大 4e-7 程度）より十分大きく、類似度の判定には影響しない幅にする。
+    /// </summary>
+    public const float ThresholdTolerance = 1e-5f;
+
     /// <summary>どれかの向きでしきい値以上になるか。グルーピング用に、見つかった時点で打ち切る。</summary>
     public static bool IsSimilar(float[] a, float[] b, float threshold)
     {
@@ -247,8 +254,9 @@ internal sealed class DINOv2Embedder : IDisposable
         if (dim == 0 || a.Length != b.Length) return false;
 
         var a0 = a.AsSpan(0, dim);
+        float limit = threshold - ThresholdTolerance;
         for (int r = 0; r < Rotations; r++)
-            if (Dot(a0, b.AsSpan(r * dim, dim)) >= threshold) return true;
+            if (Dot(a0, b.AsSpan(r * dim, dim)) >= limit) return true;
         return false;
     }
 

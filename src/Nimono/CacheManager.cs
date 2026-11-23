@@ -168,6 +168,18 @@ internal static class CacheManager
     /// </summary>
     private const long SchemaVersion = 2;
 
+    /// <summary>
+    /// グルーピングの判定方法の版。上げると、次のスキャンでグループキャッシュだけを使わずに全件を比較し直す
+    /// （特徴量キャッシュはそのまま使うため、特徴量の計算はやり直さない）。
+    /// 1: 版なし（表の Mode が方式名だけ）。
+    /// 2: DINOv2 の判定に丸め誤差の許容幅を入れた。1 の結果は、完全に同じ画像を「似ていない」と記録していることがあり、
+    ///    変わっていないファイル同士は比べ直さないため、そのまま使うと見逃しが直らない。
+    /// </summary>
+    private const int GroupingVersion = 2;
+
+    /// <summary>グループキャッシュの表で使う Mode の値（方式名 + 判定方法の版）。</summary>
+    internal static string GroupCacheKey(string mode) => $"{mode}/v{GroupingVersion}";
+
     private static void ApplyPragmas(SqliteConnection connection)
     {
         using var cmd = connection.CreateCommand();
@@ -373,8 +385,9 @@ internal static class CacheManager
                 connection.Open();
 
                 using var command = connection.CreateCommand();
+                // 判定方法の版が違う（古い）グループキャッシュは読まない
                 command.CommandText = "SELECT Threshold FROM GroupCacheInfo WHERE Mode = @Mode";
-                command.Parameters.AddWithValue("@Mode", mode);
+                command.Parameters.AddWithValue("@Mode", GroupCacheKey(mode));
                 if (command.ExecuteScalar() is not double threshold) return null;
 
                 command.CommandText = "SELECT FilePath, FileSize, LastWriteTimeTicks, GroupKey FROM GroupCache WHERE Mode = @Mode";
@@ -423,10 +436,16 @@ internal static class CacheManager
 
                 using var command = connection.CreateCommand();
                 command.Transaction = transaction;
-                command.Parameters.AddWithValue("@Mode", mode);
+                command.Parameters.AddWithValue("@Mode", GroupCacheKey(mode));
+                command.Parameters.AddWithValue("@BaseMode", mode);
+                command.Parameters.AddWithValue("@AnyVersion", mode + "/v%");
 
-                // 前回分を残すと、今回の対象外になったファイルの古い所属が次回に混ざるため、丸ごと入れ替える
-                command.CommandText = "DELETE FROM GroupCache WHERE Mode = @Mode";
+                // 前回分を残すと、今回の対象外になったファイルの古い所属が次回に混ざるため、丸ごと入れ替える。
+                // 同じ方式の古い版（版なしの方式名だけのものを含む）も、もう読まないので一緒に消す
+                command.CommandText = @"
+                    DELETE FROM GroupCache WHERE Mode = @BaseMode OR Mode LIKE @AnyVersion;
+                    DELETE FROM GroupCacheInfo WHERE Mode = @BaseMode OR Mode LIKE @AnyVersion;
+                ";
                 command.ExecuteNonQuery();
 
                 command.CommandText = "INSERT OR REPLACE INTO GroupCacheInfo (Mode, Threshold) VALUES (@Mode, @Threshold)";
